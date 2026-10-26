@@ -35,6 +35,9 @@
 #include <mujoco/mujoco.h>
 #include "platform_ui_adapter.h"
 #include "array_safety.h"
+#if defined(MJGS_ENABLE_3DGS)
+#include "viewer_bridge.h"
+#endif
 
 // When launched via an App Bundle on macOS, the working directory is the path to the App Bundle's
 // resource directory. This causes files to be saved into the bundle, which is not the desired
@@ -1853,6 +1856,11 @@ void UiEvent(mjuiState* state) {
   // shortcut not handled by UI
   if (state->type == mjEVENT_KEY && state->key != 0) {
     switch (state->key) {
+#if defined(MJGS_ENABLE_3DGS)
+      case mjKEY_F8:
+        mjgs::ToggleVisible();
+        return;
+#endif
       case ' ':  // Mode
         if (!sim->is_passive_ && sim->m_) {
           sim->run           = 1 - sim->run;
@@ -2832,6 +2840,10 @@ void Simulate::Render() {
 
   // render scene
   mjr_render(rect, &this->scn, &this->platform_ui->mjr_context());
+#if defined(MJGS_ENABLE_3DGS)
+  mjgs::Render(this->scn, rect);
+  if (mjgs::ExitRequested()) { this->exitrequest.store(1); }
+#endif
 
   // show last loading error
   if (this->load_error[0]) {
@@ -3150,6 +3162,9 @@ void Simulate::RenderLoop() {
   }
 
   const MutexLock lock(this->mtx);
+#if defined(MJGS_ENABLE_3DGS)
+  mjgs::Shutdown();
+#endif
   mjv_freeScene(&this->scn);
   if (is_passive_) {
     mj_deleteData(d_passive_);

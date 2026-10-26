@@ -29,6 +29,9 @@
 #include "glfw_adapter.h"
 #include "simulate.h"
 #include "array_safety.h"
+#if defined(MJGS_ENABLE_3DGS)
+#include "viewer_bridge.h"
+#endif
 
 #define MUJOCO_PLUGIN_DIR "mujoco_plugin"
 
@@ -499,6 +502,9 @@ __attribute__((used, visibility("default"))) extern "C" void _mj_rosettaError(co
 
 // run event loop
 int main(int argc, char** argv) {
+#if defined(MJGS_ENABLE_3DGS)
+  if (!mjgs::Configure(argc, argv)) { return 1; }
+#endif
 
   // display an error if running on macOS under Rosetta 2
 #if defined(__APPLE__) && defined(__AVX__)
