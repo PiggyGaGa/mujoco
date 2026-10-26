@@ -1,0 +1,4 @@
+[submodule "third_party/splatapult"]
+	path = third_party/splatapult
+	url = git@github.com:PiggyGaGa/splatapult.git
+	branch = feature/mujoco
