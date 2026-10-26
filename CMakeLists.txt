@@ -45,10 +45,16 @@ if(NOT EMSCRIPTEN)
   option(MUJOCO_BUILD_STUDIO "Build studio library for MuJoCo" OFF)
   option(MUJOCO_BUILD_TESTS "Build tests for MuJoCo" ON)
   option(MUJOCO_TEST_PYTHON_UTIL "Build and test utility libraries for Python bindings" ON)
+  option(MUJOCO_ENABLE_3DGS "Enable Splatapult 3D Gaussian rendering in simulate" ON)
+  option(MUJOCO_BUILD_3DGS_TESTS "Build tests for the 3D Gaussian viewer integration" ON)
   option(MUJOCO_WITH_USD "Build with OpenUSD" OFF)
   option(MUJOCO_USE_FILAMENT "Use filament rendering" OFF)
   # Allows filament renderer to be used with mjr API; disables src/render to prevent conflicts.
   option(MUJOCO_USE_FILAMENT_MJR_COMPAT "Use filament mjr compatibility layer" OFF)
+endif()
+
+if(MUJOCO_BUILD_3DGS_TESTS)
+  enable_testing()
 endif()
 
 if(EMSCRIPTEN)

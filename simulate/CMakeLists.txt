@@ -39,6 +39,8 @@ endif()
 
 option(SIMULATE_BUILD_EXECUTABLE "Build the simulate executable binary." ON)
 option(SIMULATE_GLFW_DYNAMIC_SYMBOLS "Whether to resolve GLFW symbols dynamically." OFF)
+option(MUJOCO_ENABLE_3DGS "Enable Splatapult 3D Gaussian rendering in simulate." ON)
+option(MUJOCO_BUILD_3DGS_TESTS "Build tests for the 3D Gaussian viewer integration." ON)
 
 # Check if we are building as standalone project.
 set(SIMULATE_STANDALONE OFF)
@@ -123,6 +125,15 @@ target_compile_options(libmujoco_simulate PRIVATE ${MUJOCO_SIMULATE_COMPILE_OPTI
 target_link_libraries(libmujoco_simulate PUBLIC mujoco::mujoco)
 target_link_options(libmujoco_simulate PRIVATE ${MUJOCO_SIMULATE_LINK_OPTIONS})
 
+if(MUJOCO_ENABLE_3DGS)
+  if(MUJOCO_USE_FILAMENT OR MUJOCO_USE_FILAMENT_MJR_COMPAT)
+    message(FATAL_ERROR "3DGS integration requires the classic OpenGL renderer")
+  endif()
+  add_subdirectory(gaussian)
+  target_compile_definitions(libmujoco_simulate PRIVATE MJGS_ENABLE_3DGS)
+  target_link_libraries(libmujoco_simulate PUBLIC $<BUILD_INTERFACE:mujoco_3dgs_renderer>)
+endif()
+
 if(APPLE)
   target_sources(libmujoco_simulate PRIVATE macos_gui.mm)
   target_link_libraries(libmujoco_simulate PUBLIC "-framework Cocoa")
@@ -140,6 +151,10 @@ if(SIMULATE_BUILD_EXECUTABLE)
 
   add_executable(simulate main.cc array_safety.h ${SIMULATE_RESOURCE_FILES})
   target_compile_options(simulate PUBLIC ${MUJOCO_SIMULATE_COMPILE_OPTIONS})
+  if(MUJOCO_ENABLE_3DGS)
+    target_compile_definitions(simulate PRIVATE MJGS_ENABLE_3DGS)
+    target_link_libraries(simulate mujoco_3dgs_renderer)
+  endif()
   if(WIN32)
     add_custom_command(
       TARGET simulate
