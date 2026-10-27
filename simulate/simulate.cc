@@ -105,6 +105,9 @@ enum {
   SECT_PHYSICS,
   SECT_RENDERING,
   SECT_VISUALIZATION,
+#if defined(MJGS_ENABLE_3DGS)
+  SECT_3DGS,
+#endif
   SECT_GROUP,
   SECT_LOGGING,
   NSECT0,
@@ -1102,6 +1105,18 @@ void MakeVisualizationSection(mj::Simulate* sim, const mjModel* m) {
   mjui_add(&sim->ui0, defVisualization);
 }
 
+#if defined(MJGS_ENABLE_3DGS)
+// make 3DGS section of UI
+void Make3DgsSection(mj::Simulate* sim) {
+  mjuiDef def3Dgs[] = {
+      {mjITEM_SECTION, "3DGS", mjPRESERVE, nullptr, ""},
+      {mjITEM_RADIO, "", 5, mjgs::HiddenState(), "Show\nHide (F8)"},
+      {mjITEM_END}
+  };
+  mjui_add(&sim->ui0, def3Dgs);
+}
+#endif
+
 // make group section of UI
 void MakeGroupSection(mj::Simulate* sim) {
   mjuiDef defGroup[] = {
@@ -1339,6 +1354,9 @@ void MakeUiSections(mj::Simulate* sim, const mjModel* m, const mjData* d) {
   MakePhysicsSection(sim);
   MakeRenderingSection(sim, m);
   MakeVisualizationSection(sim, m);
+#if defined(MJGS_ENABLE_3DGS)
+  Make3DgsSection(sim);
+#endif
   MakeGroupSection(sim);
   MakeLoggingSection(sim);
   MakeJointSection(sim);
@@ -1859,6 +1877,7 @@ void UiEvent(mjuiState* state) {
 #if defined(MJGS_ENABLE_3DGS)
       case mjKEY_F8:
         mjgs::ToggleVisible();
+        if (sim->ui0_enable) { mjui0_update_section(sim, SECT_3DGS); }
         return;
 #endif
       case ' ':  // Mode

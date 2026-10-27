@@ -20,7 +20,7 @@ SceneConfig config;
 std::unique_ptr<SplatRenderer> renderer;
 bool attempted = false;
 bool warned = false;
-bool visible = true;
+int hidden = 0;
 bool exit_requested = false;
 int frames = 0;
 float Number(const char* text) {
@@ -107,7 +107,7 @@ void Render(const mjvScene& scene, mjrRect rect) {
       std::fprintf(stderr,"[3DGS] Loaded %zu Gaussians, GL %s\n",cloud->GetNumGaussians(),glGetString(GL_VERSION));
     }
     if (!renderer) return;
-    if (!visible) { if (!config.screenshot.empty()) Capture(rect); return; }
+    if (hidden) { if (!config.screenshot.empty()) Capture(rect); return; }
     const auto camera=mjv_averageCamera(scene.camera,scene.camera+1);
     if (scene.stereo!=mjSTEREO_NONE || camera.orthographic || scene.enabletransform) {
       if (!warned) std::fprintf(stderr,"[3DGS] Stereo/orthographic/scene transforms not supported; splats hidden\n");
@@ -143,6 +143,10 @@ void Render(const mjvScene& scene, mjrRect rect) {
   }
 }
 void Shutdown() { renderer.reset(); }
-void ToggleVisible() { visible = !visible; std::fprintf(stderr,"[3DGS] %s\n",visible ? "Visible" : "Hidden"); }
+int* HiddenState() { return &hidden; }
+void ToggleVisible() {
+  hidden = !hidden;
+  std::fprintf(stderr,"[3DGS] %s\n",hidden ? "Hidden" : "Visible");
+}
 bool ExitRequested() { return exit_requested; }
 }
