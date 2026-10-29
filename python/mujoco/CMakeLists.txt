@@ -608,6 +608,9 @@ target_link_libraries(
 )
 
 mujoco_pybind11_module(_simulate simulate.cc)
+if(MUJOCO_ENABLE_3DGS)
+  target_compile_definitions(_simulate PRIVATE MJGS_ENABLE_3DGS)
+endif()
 target_link_libraries(
   _simulate
   PRIVATE mujoco

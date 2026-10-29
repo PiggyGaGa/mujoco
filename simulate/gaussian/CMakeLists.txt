@@ -6,6 +6,14 @@ find_package(GLEW REQUIRED)
 find_package(glm CONFIG REQUIRED)
 find_package(Eigen3 CONFIG REQUIRED)
 find_package(SDL2 CONFIG REQUIRED)
+if(SIMULATE_BUILD_EXECUTABLE)
+  find_package(OpenSSL REQUIRED)
+  find_path(MJGS_JSON_INCLUDE nlohmann/json.hpp REQUIRED)
+  add_library(mujoco_3dgs_manifest STATIC manifest.cc)
+  target_compile_features(mujoco_3dgs_manifest PUBLIC cxx_std_17)
+  target_include_directories(mujoco_3dgs_manifest PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}" PRIVATE ${MJGS_JSON_INCLUDE})
+  target_link_libraries(mujoco_3dgs_manifest PUBLIC mujoco::mujoco PRIVATE OpenSSL::Crypto tinyxml2)
+endif()
 
 set(MJGS_SPLAT_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/splatapult")
 set(MJGS_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
@@ -21,7 +29,8 @@ function(mjgs_replace_once variable old new)
 endfunction()
 
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-  "${MJGS_SPLAT_ROOT}/src/splatrenderer.cpp")
+  "${MJGS_SPLAT_ROOT}/src/splatrenderer.cpp"
+  "${MJGS_SPLAT_ROOT}/src/core/util.cpp")
 
 file(GLOB splat_shaders CONFIGURE_DEPENDS "${MJGS_SPLAT_ROOT}/shader/*")
 foreach(shader IN LISTS splat_shaders)
@@ -51,6 +60,24 @@ mjgs_replace_once(presort "depth > 0.0f &&"
   "depth >= nearFar.x && depth <= nearFar.y &&")
 file(WRITE "${MJGS_GENERATED_DIR}/shader/presort_compute.glsl" "${presort}")
 
+# Embed the adapted shaders so installed viewers never depend on a build tree.
+set(embedded "#pragma once\n#include <string>\ninline bool MjgsLoadShader(const std::string& name, std::string& data) {\n")
+foreach(shader IN LISTS splat_shaders)
+  get_filename_component(name "${shader}" NAME)
+  file(READ "${MJGS_GENERATED_DIR}/shader/${name}" source)
+  string(FIND "${source}" ")mjgs_shader\"" delimiter)
+  if(NOT delimiter EQUAL -1)
+    message(FATAL_ERROR "Embedded shader delimiter occurs in ${name}")
+  endif()
+  string(APPEND embedded "if (name == \"shader/${name}\") { data = R\"mjgs_shader(${source})mjgs_shader\"; return true; }\n")
+endforeach()
+string(APPEND embedded "return false;\n}\n")
+file(WRITE "${MJGS_GENERATED_DIR}/mjgs_embedded_shaders.h" "${embedded}")
+file(READ "${MJGS_SPLAT_ROOT}/src/core/util.cpp" util_source)
+mjgs_replace_once(util_source "bool LoadFile(const std::string& filename, std::string& data)\n{"
+  "bool LoadFile(const std::string& filename, std::string& data)\n{\n    if (MjgsLoadShader(filename, data)) return true;")
+file(WRITE "${MJGS_GENERATED_DIR}/util.cpp" "#include \"mjgs_embedded_shaders.h\"\n${util_source}")
+
 file(READ "${MJGS_SPLAT_ROOT}/src/splatrenderer.cpp" splat_source)
 mjgs_replace_once(splat_source
   "    if (useMultiRadixSort)\n    {\n        ZoneScopedNC(\"sort\""
@@ -68,11 +95,11 @@ add_library(mujoco_3dgs_splat STATIC
   "${splat_src}/core/binaryattribute.cpp"
   "${splat_src}/core/program.cpp"
   "${splat_src}/core/vertexbuffer.cpp"
-  "${splat_src}/core/util.cpp"
+  "${MJGS_GENERATED_DIR}/util.cpp"
   "${splat_src}/core/log.cpp")
 add_library(mujoco::3dgs_splat ALIAS mujoco_3dgs_splat)
 target_compile_features(mujoco_3dgs_splat PUBLIC cxx_std_17)
-target_include_directories(mujoco_3dgs_splat PUBLIC "${splat_src}")
+target_include_directories(mujoco_3dgs_splat PUBLIC "${splat_src}" PRIVATE "${splat_src}/core" "${MJGS_GENERATED_DIR}")
 target_link_libraries(mujoco_3dgs_splat PUBLIC
   GLEW::GLEW glm::glm Eigen3::Eigen OpenGL::GL SDL2::SDL2)
 set_target_properties(mujoco_3dgs_splat PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -85,8 +112,6 @@ target_include_directories(mujoco_3dgs_renderer PUBLIC "${CMAKE_CURRENT_SOURCE_D
 target_link_libraries(mujoco_3dgs_renderer
   PRIVATE mujoco_3dgs_splat
   PUBLIC mujoco::mujoco)
-target_compile_definitions(mujoco_3dgs_renderer PRIVATE
-  MJGS_SHADER_ROOT="${MJGS_GENERATED_DIR}/")
 set_target_properties(mujoco_3dgs_renderer PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 if(MUJOCO_BUILD_3DGS_TESTS)

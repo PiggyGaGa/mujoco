@@ -77,10 +77,29 @@ class Handle:
     self._opt = opt
     self._pert = pert
     self._user_scn = user_scn
+    self._thread: Optional[threading.Thread] = None
 
   @property
   def cam(self):
     return self._cam
+
+  def load_gaussian_ply(self, path: str) -> None:
+    """Queue a world-coordinate PLY replacement on this viewer's GL thread."""
+    if not hasattr(_simulate, 'validate_gaussian_ply'):
+      raise RuntimeError('MuJoCo was built without 3DGS support')
+    path = os.path.abspath(os.path.expanduser(os.fspath(path)))
+    _simulate.validate_gaussian_ply(path)
+    sim = self._sim()
+    if sim is not None:
+      sim.load_gaussian_ply(path)
+
+  @property
+  def gaussian_status(self) -> str:
+    """Return empty, pending, ready, error: <reason>, closed, or unsupported."""
+    sim = self._sim()
+    if sim is None:
+      return 'closed'
+    return getattr(sim, 'gaussian_status', 'unsupported')
 
   @property
   def opt(self):
@@ -209,6 +228,10 @@ class Handle:
     sim = self._sim()
     if sim is not None:
       sim.exit()
+    # Wait for GL resource/window destruction before temporary assets or Python
+    # itself can be torn down. The C++ exit request alone is asynchronous.
+    if self._thread is not None and self._thread is not threading.current_thread():
+      self._thread.join()
 
   def _get_sim(self) -> Optional[_Simulate]:
     sim = self._sim()
@@ -450,6 +473,7 @@ def _launch_internal(
     data: Optional[mujoco.MjData] = None,
     *,
     run_physics_thread: bool,
+    gaussian_ply: Optional[str] = None,
     loader: Optional[_InternalLoaderType] = None,
     handle_return: Optional['queue.Queue[Handle]'] = None,
     key_callback: Optional[KeyCallbackType] = None,
@@ -457,6 +481,8 @@ def _launch_internal(
     show_right_ui: bool = True,
 ) -> None:
   """Internal API, so that the public API has more readable type annotations."""
+  if gaussian_ply is not None:
+    _simulate.set_world_gaussian_ply(gaussian_ply)
   if model is None and data is not None:
     raise ValueError('mjData is specified but mjModel is not')
   elif callable(model) and data is not None:
@@ -559,14 +585,29 @@ def launch_passive(
     key_callback: Optional[KeyCallbackType] = None,
     show_left_ui: bool = True,
     show_right_ui: bool = True,
+    gaussian_ply: Optional[str] = None,
 ) -> Handle:
-  """Launches a passive Simulate GUI without blocking the running thread."""
+  """Launches a passive Simulate GUI without blocking the running thread.
+
+  gaussian_ply optionally supplies a world-coordinate PLY exported from mjlab.
+  The supplied model must already contain the matching collision geometry.
+  This extension currently supports Linux with classic OpenGL 4.6 only.
+  """
   if not isinstance(model, mujoco.MjModel):
     raise ValueError(f'`model` is not a mujoco.MjModel: got {model!r}')
   if not isinstance(data, mujoco.MjData):
     raise ValueError(f'`data` is not a mujoco.MjData: got {data!r}')
   if key_callback is not None and not callable(key_callback):
     raise ValueError(f'`key_callback` is not callable: got {key_callback!r}')
+
+  if gaussian_ply is not None:
+    if sys.platform != 'linux':
+      raise RuntimeError('3DGS passive viewer currently requires Linux')
+    if not hasattr(_simulate, 'validate_gaussian_ply'):
+      raise RuntimeError('MuJoCo was built without 3DGS support')
+    gaussian_ply = os.path.abspath(os.path.expanduser(os.fspath(gaussian_ply)))
+    # Validate on the calling thread so file errors do not strand handle_return.
+    _simulate.validate_gaussian_ply(gaussian_ply)
 
   mujoco.mj_forward(model, data)
   handle_return = queue.Queue(1)
@@ -581,6 +622,7 @@ def launch_passive(
             key_callback=key_callback,
             show_left_ui=show_left_ui,
             show_right_ui=show_right_ui,
+            gaussian_ply=gaussian_ply,
         ),
     )
     thread.daemon = True
@@ -600,7 +642,10 @@ def launch_passive(
         show_right_ui,
     )
 
-  return handle_return.get()
+  handle = handle_return.get()
+  if sys.platform != 'darwin':
+    handle._thread = thread
+  return handle
 
 
 if __name__ == '__main__':

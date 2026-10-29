@@ -25,6 +25,9 @@
 #include <glfw_adapter.h>
 #include <glfw_dispatch.h>
 #include <simulate.h>
+#if defined(MJGS_ENABLE_3DGS)
+#include <viewer_bridge.h>
+#endif
 #include <Python.h>
 #include "errors.h"
 #include "indexers.h"
@@ -324,6 +327,10 @@ inline auto SetIfNotNull(T mujoco::Simulate::* member) {
 }
 
 PYBIND11_MODULE(_simulate, pymodule, pybind11::mod_gil_not_used()) {
+#if defined(MJGS_ENABLE_3DGS)
+  pymodule.def("validate_gaussian_ply", &mjgs::ValidatePly);
+  pymodule.def("set_world_gaussian_ply", &mjgs::SetWorldPly);
+#endif
   py::class_<SimulateMutex>(pymodule, "Mutex")
       .def(
           "__enter__", [](SimulateMutex& mtx) { mtx.lock(); },
@@ -422,6 +429,17 @@ PYBIND11_MODULE(_simulate, pymodule, pybind11::mod_gil_not_used()) {
              sim.UpdateHField(hfieldid);
            }),
            py::call_guard<py::gil_scoped_release>())
+#if defined(MJGS_ENABLE_3DGS)
+      .def_property_readonly("gaussian_status", py::cpp_function(CallIfNotNull(+[](mujoco::Simulate& sim) {
+             const std::unique_lock<mujoco::SimulateMutex> lock(sim.mtx);
+             return sim.gaussian_status;
+           }), py::call_guard<py::gil_scoped_release>()))
+      .def("load_gaussian_ply", CallIfNotNull(+[](mujoco::Simulate& sim, const std::string& path) {
+             const std::unique_lock<mujoco::SimulateMutex> lock(sim.mtx);
+             sim.gaussian_ply_pending = path;
+             sim.gaussian_status = "pending";
+           }), py::call_guard<py::gil_scoped_release>())
+#endif
       .def("update_mesh", CallIfNotNull(+[](mujoco::Simulate& sim, int meshid) {
              sim.UpdateMesh(meshid);
            }),

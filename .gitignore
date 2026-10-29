@@ -48,3 +48,6 @@ MUJOCO_LOG.TXT
 wasm/**/dist/
 **/node_modules/
 
+
+# Exclude Pthon dist
+dist/

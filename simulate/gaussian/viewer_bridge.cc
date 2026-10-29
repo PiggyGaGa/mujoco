@@ -16,13 +16,16 @@
 
 namespace mjgs {
 namespace {
-SceneConfig config;
-std::unique_ptr<SplatRenderer> renderer;
-bool attempted = false;
-bool warned = false;
-int hidden = 0;
-bool exit_requested = false;
-int frames = 0;
+// A passive viewer owns its rendering thread. Keep its configuration and GL
+// resources isolated from other passive viewers in the same Python process.
+thread_local SceneConfig config;
+thread_local std::unique_ptr<SplatRenderer> renderer;
+thread_local bool attempted = false;
+thread_local bool warned = false;
+thread_local int hidden = 0;
+thread_local bool exit_requested = false;
+thread_local int frames = 0;
+thread_local std::string status = "empty";
 float Number(const char* text) {
   size_t end = 0;
   float x = std::stof(text, &end);
@@ -68,6 +71,7 @@ bool Configure(int& argc, char** argv) {
         config.capture_frame = static_cast<int>(n);
       } else if (key == "--gs-help") {
         std::puts("simulate model.xml --gs-ply scene.ply [--gs-scale S] [--gs-translate X Y Z]\n"
+                  "simulate [base.xml] --scene-manifest manifest.json [--scene-spawn-point NAME] [--scene-check]\n"
                   "  [--gs-rotate RX RY RZ] (degrees, Rz*Ry*Rx) [--gs-no-sh]\n"
                   "  [--gs-screenshot image.ppm --gs-capture-frame N]\n"
                   "PLY adds appearance only; collision geometry belongs in MJCF.");
@@ -84,7 +88,9 @@ bool Configure(int& argc, char** argv) {
   } catch (const std::exception& e) { std::fprintf(stderr,"[3DGS] %s\n",e.what()); return false; }
 }
 void Render(const mjvScene& scene, mjrRect rect) {
-  if (rect.width<=0 || rect.height<=0 || scene.ngeom == 0) return;
+  // A manifest can contain only group-3 collision geoms, hidden by the native
+  // viewer by default. Its Gaussian appearance must still render in that case.
+  if (rect.width<=0 || rect.height<=0) return;
   // No asset means exactly the upstream viewer rendering, apart from optional capture.
   if (config.ply.empty()) { if (!config.screenshot.empty()) Capture(rect); return; }
   try {
@@ -97,13 +103,13 @@ void Render(const mjvScene& scene, mjrRect rect) {
       if (!GLEW_VERSION_4_6 || (profile & GL_CONTEXT_CORE_PROFILE_BIT))
         throw std::runtime_error("Need OpenGL 4.6 compatibility profile; normal viewer remains available");
       GlState state;
-      SetRootPath(MJGS_SHADER_ROOT);
       auto cloud=std::make_shared<GaussianCloud>(GaussianCloud::Options{config.full_sh,false});
       if (!cloud->ImportPly(config.ply) || !cloud->GetNumGaussians())
         throw std::runtime_error("Gaussian asset loading failed");
       auto candidate=std::make_unique<SplatRenderer>();
       if (!candidate->Init(cloud,false,false)) throw std::runtime_error("Splat renderer initialization failed");
       renderer=std::move(candidate);
+      status = "ready";
       std::fprintf(stderr,"[3DGS] Loaded %zu Gaussians, GL %s\n",cloud->GetNumGaussians(),glGetString(GL_VERSION));
     }
     if (!renderer) return;
@@ -139,14 +145,34 @@ void Render(const mjvScene& scene, mjrRect rect) {
     renderer->Render(local_camera,projection,viewport,nearfar);
     if (!config.screenshot.empty()) Capture(rect);
   } catch (const std::exception& e) {
+    status = std::string("error: ") + e.what();
     std::fprintf(stderr,"[3DGS] Disabled: %s\n",e.what()); renderer.reset();
   }
 }
-void Shutdown() { renderer.reset(); }
+void Shutdown() {
+  renderer.reset();
+  config = SceneConfig{};
+  attempted = warned = exit_requested = false;
+  hidden = frames = 0;
+  status = "empty";
+}
+void SetWorldPly(const std::string& path) {
+  Shutdown();
+  config.ply = path;
+  config.full_sh = false;  // mjlab's normalized RGBA contains DC color only.
+  status = path.empty() ? "empty" : "pending";
+}
+void SetManifestVisual(const std::string& path, const double* position, const double* quaternion) {
+  config.ply = path;
+  config.translation = glm::vec3(position[0],position[1],position[2]);
+  config.quaternion = glm::quat(quaternion[0],quaternion[1],quaternion[2],quaternion[3]);
+  config.use_quaternion = true;
+}
 int* HiddenState() { return &hidden; }
 void ToggleVisible() {
   hidden = !hidden;
   std::fprintf(stderr,"[3DGS] %s\n",hidden ? "Hidden" : "Visible");
 }
 bool ExitRequested() { return exit_requested; }
+const std::string& Status() { return status; }
 }

@@ -28,17 +28,19 @@ else
   readonly tmp_dir="$(mktemp -d)"
 fi
 
-python -m pip install --no-build-isolation --upgrade --require-hashes \
-    -r ${package_dir}/make_sdist_requirements.txt
+if [[ "${MUJOCO_SKIP_BUILD_DEPS:-0}" != "1" ]]; then
+  python -m pip install --no-build-isolation --upgrade --require-hashes \
+      -r ${package_dir}/make_sdist_requirements.txt
+fi
 pushd ${tmp_dir}
 cp -r "${package_dir}"/* .
 
 # Generate header files.
 old_pythonpath="${PYTHONPATH}"
 if [[ "$(uname)" == CYGWIN* || "$(uname)" == MINGW* ]]; then
-  export PYTHONPATH="${old_pythonpath};${package_dir}/mujoco/python/.."
+  export PYTHONPATH="${old_pythonpath};${package_dir}/mujoco"
 else
-  export PYTHONPATH="${old_pythonpath}:${package_dir}/mujoco/python/.."
+  export PYTHONPATH="${old_pythonpath}:${package_dir}/mujoco"
 fi
 python "${package_dir}"/mujoco/codegen/generate_enum_traits.py > \
     mujoco/enum_traits.h
@@ -57,6 +59,14 @@ cp -r "${package_dir}"/../cmake/* mujoco/cmake
 
 # Copy over Simulate source code.
 cp -r "${package_dir}"/../simulate mujoco
+
+# Sources and licenses needed to rebuild the optional 3DGS viewer from the sdist.
+mkdir -p mujoco/third_party/splatapult
+cp -r "${package_dir}"/../third_party/splatapult/src mujoco/third_party/splatapult/
+cp -r "${package_dir}"/../third_party/splatapult/shader mujoco/third_party/splatapult/
+cp "${package_dir}"/../third_party/splatapult/LICENSE mujoco/third_party/splatapult/
+mkdir -p mujoco/3dgs_licenses
+cp "${package_dir}"/../third_party/splatapult/LICENSE mujoco/3dgs_licenses/Splatapult.txt
 
 python -m build --no-isolation . --sdist
 tar -tf dist/mujoco-*.tar.gz

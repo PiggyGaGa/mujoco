@@ -1,4 +1,6 @@
 include LICENSE *.md
+recursive-include mujoco/third_party/splatapult *.h *.hpp *.cpp *.glsl *.comp LICENSE
+recursive-include mujoco/3dgs_licenses *.txt
 recursive-include mujoco *.h *.cc *.cc.inc *.cpp *.inl *.html *.mm CMakeLists.txt *.cmake
 recursive-include mujoco/mjpython mjpython.* Info.plist
 recursive-include mujoco/experimental/studio/web *.html

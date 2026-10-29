@@ -235,6 +235,9 @@ class Simulate {
 
   // strings
   char load_error[kMaxFilenameLength]        = "";
+  // Python submits a validated world-coordinate PLY; consumed on the GL thread.
+  std::optional<std::string> gaussian_ply_pending;
+  std::string gaussian_status = "empty";
   char dropfilename[kMaxFilenameLength]      = "";
   char filename[kMaxFilenameLength]          = "";
   char previous_filename[kMaxFilenameLength] = "";

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mujoco"
-version = "3.16.0"
+version = "3.16.0+3dgs"
 authors = [
     {name = "Google DeepMind", email = "mujoco@deepmind.com"},
 ]
@@ -53,6 +53,7 @@ exclude = [
 
 [tool.setuptools.package-data]
 mujoco = [
+    "3dgs_licenses/*.txt",
     "libmujoco.*.dylib",
     "libmujoco*.so.*",
     "mujoco.dll",

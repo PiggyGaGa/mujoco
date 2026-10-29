@@ -31,6 +31,7 @@
 #include "array_safety.h"
 #if defined(MJGS_ENABLE_3DGS)
 #include "viewer_bridge.h"
+#include "manifest.h"
 #endif
 
 #define MUJOCO_PLUGIN_DIR "mujoco_plugin"
@@ -59,6 +60,9 @@ const int    kErrorLength       = 1024;  // load error string length
 // model and data
 mjModel* m = nullptr;
 mjData*  d = nullptr;
+#if defined(MJGS_ENABLE_3DGS)
+std::unique_ptr<mjgs::Manifest> scene_manifest;
+#endif
 
 using Seconds = std::chrono::duration<double>;
 
@@ -227,6 +231,14 @@ mjModel* LoadModel(const char* file, mj::Simulate& sim) {
     extension = filename_str.substr(dot_pos);
   }
 
+#if defined(MJGS_ENABLE_3DGS)
+  if (scene_manifest) {
+    try {
+      mnew = mjgs::CompileManifest(*scene_manifest,
+          filename_str == scene_manifest->collision ? "" : filename_str);
+    } catch (const std::exception& e) { mju::strcpy_arr(loadError, e.what()); }
+  } else
+#endif
   if (extension == ".mjb") {
     mnew = mj_loadModel(filename, nullptr);
     if (!mnew) { mju::strcpy_arr(loadError, "could not load binary model"); }
@@ -503,7 +515,55 @@ __attribute__((used, visibility("default"))) extern "C" void _mj_rosettaError(co
 // run event loop
 int main(int argc, char** argv) {
 #if defined(MJGS_ENABLE_3DGS)
+  bool scene_check = false;
+  std::string manifest_path, spawn;
+  bool split_asset = false;
+  try {
+    int output=1;
+    for (int i=1;i<argc;++i) {
+      std::string key=argv[i];
+      if (key=="--scene-manifest" || key=="--scene-spawn-point") {
+        if (++i>=argc) throw std::runtime_error("Missing value after "+key);
+        (key=="--scene-manifest" ? manifest_path : spawn)=argv[i];
+      } else if (key=="--scene-check") scene_check=true;
+      else {
+        split_asset |= key=="--gs-ply" || key=="--gs-scale" || key=="--gs-translate" || key=="--gs-rotate";
+        argv[output++]=argv[i];
+      }
+    }
+    argc=output; argv[output]=nullptr;
+    if (manifest_path.empty() && (scene_check || !spawn.empty()))
+      throw std::runtime_error("Scene options require --scene-manifest");
+    if (!manifest_path.empty()) {
+      if (split_asset) throw std::runtime_error("Manifest cannot be combined with --gs-ply/scale/translate/rotate");
+      scene_manifest=std::make_unique<mjgs::Manifest>(mjgs::LoadManifest(manifest_path,spawn));
+      mjgs::ValidatePly(scene_manifest->visual);
+      mjgs::SetManifestVisual(scene_manifest->visual,scene_manifest->position.data(),scene_manifest->quaternion.data());
+      std::printf("[manifest] Spawn world position %.9g %.9g %.9g; quaternion wxyz %.9g %.9g %.9g %.9g (metadata only)\n",
+          scene_manifest->spawn_position[0],scene_manifest->spawn_position[1],scene_manifest->spawn_position[2],
+          scene_manifest->spawn_quaternion[0],scene_manifest->spawn_quaternion[1],scene_manifest->spawn_quaternion[2],scene_manifest->spawn_quaternion[3]);
+    }
+  } catch (const std::exception& e) {
+    std::fprintf(stderr,"[manifest] %s\n",e.what()); return 1;
+  }
   if (!mjgs::Configure(argc, argv)) { return 1; }
+  if (scene_check) {
+    try {
+      if (argc>2) throw std::runtime_error("Expected at most one base XML");
+      std::unique_ptr<mjModel,decltype(&mj_deleteModel)> checked(
+          mjgs::CompileManifest(*scene_manifest,argc>1?argv[1]:""),mj_deleteModel);
+      std::printf("[manifest] OK: %lld geoms, %lld bodies\n",
+          static_cast<long long>(checked->ngeom),static_cast<long long>(checked->nbody));
+      std::unique_ptr<mjData,decltype(&mj_deleteData)> state(mj_makeData(checked.get()),mj_deleteData);
+      mj_forward(checked.get(),state.get());
+      for (int i=0;i<checked->ngeom;++i) {
+        const char* name=mj_id2name(checked.get(),mjOBJ_GEOM,i);
+        std::printf("[manifest] geom %s group %d pos %.9g %.9g %.9g\n",name?name:"<unnamed>",
+            checked->geom_group[i],state->geom_xpos[3*i],state->geom_xpos[3*i+1],state->geom_xpos[3*i+2]);
+      }
+      return 0;
+    } catch (const std::exception& e) { std::fprintf(stderr,"[manifest] %s\n",e.what()); return 1; }
+  }
 #endif
 
   // display an error if running on macOS under Rosetta 2
@@ -542,6 +602,9 @@ int main(int argc, char** argv) {
 
   const char* filename = nullptr;
   if (argc > 1) { filename = argv[1]; }
+#if defined(MJGS_ENABLE_3DGS)
+  else if (scene_manifest) { filename = scene_manifest->collision.c_str(); }
+#endif
 
   // start physics thread
   std::thread physicsthreadhandle(&PhysicsThread, sim.get(), filename);

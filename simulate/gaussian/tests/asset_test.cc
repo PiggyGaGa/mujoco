@@ -13,6 +13,10 @@ int main() {
     mjgs::SceneConfig c; c.scale=2; c.rotation_degrees.z=90; c.translation={1,2,3};
     glm::vec4 p=mjgs::WorldFromGaussian(c)*glm::vec4(1,0,0,1);
     if (glm::length(glm::vec3(p)-glm::vec3(1,4,3))>1e-5f) throw std::runtime_error("Transform mismatch");
+    c.use_quaternion=true;
+    c.quaternion=glm::angleAxis(glm::radians(90.f),glm::vec3(0,0,1));
+    auto q=mjgs::WorldFromGaussian(c)*glm::vec4(1,0,0,1);
+    if (glm::length(q-p)>1e-5f) throw std::runtime_error("Manifest wxyz transform mismatch");
     auto write=[&](bool valid, bool truncated) {
       std::ofstream f(path,std::ios::binary);
       f<<"ply\nformat binary_little_endian 1.0\nelement vertex 1\n";

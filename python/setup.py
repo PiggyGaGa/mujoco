@@ -355,7 +355,7 @@ class BuildCMakeExtension(build_ext.build_ext):
 
     print('Building all extensions with CMake')
     subprocess.check_call(
-        [cmake, '--build', '.', f'-j{os.cpu_count()}', '--config', build_cfg],
+        [cmake, '--build', '.', '-j' + os.environ.get('CMAKE_BUILD_PARALLEL_LEVEL', str(os.cpu_count())), '--config', build_cfg],
         cwd=self.build_temp,
     )
 

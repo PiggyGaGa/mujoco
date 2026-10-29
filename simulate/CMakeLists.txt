@@ -153,7 +153,7 @@ if(SIMULATE_BUILD_EXECUTABLE)
   target_compile_options(simulate PUBLIC ${MUJOCO_SIMULATE_COMPILE_OPTIONS})
   if(MUJOCO_ENABLE_3DGS)
     target_compile_definitions(simulate PRIVATE MJGS_ENABLE_3DGS)
-    target_link_libraries(simulate mujoco_3dgs_renderer)
+    target_link_libraries(simulate mujoco_3dgs_renderer mujoco_3dgs_manifest)
   endif()
   if(WIN32)
     add_custom_command(

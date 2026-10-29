@@ -2858,9 +2858,16 @@ void Simulate::Render() {
   }
 
   // render scene
+#if defined(MJGS_ENABLE_3DGS)
+  if (this->gaussian_ply_pending) {
+    mjgs::SetWorldPly(*this->gaussian_ply_pending);
+    this->gaussian_ply_pending.reset();
+  }
+#endif
   mjr_render(rect, &this->scn, &this->platform_ui->mjr_context());
 #if defined(MJGS_ENABLE_3DGS)
   mjgs::Render(this->scn, rect);
+  this->gaussian_status = mjgs::Status();
   if (mjgs::ExitRequested()) { this->exitrequest.store(1); }
 #endif
 

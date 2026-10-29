@@ -73,6 +73,9 @@ git submodule status
 
 在仓库根目录执行：
 
+
+**一定要指定C++11编译器，否则会报错**
+
 ```bash
 cmake -S . -B build \
   -DCMAKE_BUILD_TYPE=Release \
@@ -80,7 +83,9 @@ cmake -S . -B build \
   -DMUJOCO_ENABLE_3DGS=ON \
   -DMUJOCO_BUILD_3DGS_TESTS=ON \
   -DMUJOCO_USE_FILAMENT=OFF \
-  -DMUJOCO_USE_FILAMENT_MJR_COMPAT=OFF
+  -DMUJOCO_USE_FILAMENT_MJR_COMPAT=OFF \
+  -DCMAKE_C_COMPILER=gcc-11 \
+  -DCMAKE_CXX_COMPILER=g++-11 \
 
 cmake --build build -j"$(nproc)"
 ```
@@ -371,3 +376,524 @@ ctest --test-dir build -R '^mjgs_asset_test$' --output-on-failure
   model/gaussian/viewer_demo.xml \
   --gs-ply third_party/splatapult/data/test.ply
 ```
+
+## 13. 与 mjlab manifest 的资产对齐
+
+`tools/mjlab_assets.py` 提供资产导出桥，复用 mjlab 自身的
+`apply_scene_manifest`、Gaussian 加载器和 `Scene` 碰撞构建流程。
+它不维护第二份 manifest 解析器：版本、相对路径、SHA-256、依赖文件、
+右手 Z-up 米制坐标和出生点选择规则均由 mjlab 校验。
+
+在已安装 mjlab 及其依赖的环境中运行（输出目录必须尚不存在）：
+
+```bash
+cd /home/yzt/Documents/3DGS/mjlab
+uv run python /home/yzt/Documents/3DGS/mujoco/tools/mjlab_assets.py \
+  src/mjlab/asset_zoo/3dgs/room1/manifest.json \
+  /tmp/mjlab-room1-aligned
+```
+
+可以增加 `--spawn-point NAME` 选择 manifest 中的出生点。
+导出内容：
+
+- `scene.xml` 和 `assets/`：由 mjlab 构建并导出的静态碰撞场景，保留
+  manifest 的碰撞分组，应用 `world_from_scene`，不额外添加平面。
+- `visual.ply`：由 mjlab 标准化数据生成的 binary little-endian Gaussian PLY；
+  位置、旋转和尺度已经转换到世界坐标。
+- `alignment.json`：记录来源、源文件哈希、碰撞分组和所选出生点的世界位姿。
+  这是导出元数据，不是可替代原 manifest 的场景配置。
+
+查看对齐结果：
+
+```bash
+cd /home/yzt/Documents/3DGS/mujoco
+./build/bin/simulate /tmp/mjlab-room1-aligned/scene.xml \
+  --gs-ply /tmp/mjlab-room1-aligned/visual.ply --gs-no-sh
+```
+
+**不要再传 `--gs-scale`、`--gs-translate` 或 `--gs-rotate`，否则会重复变换。**
+碰撞分组默认是 3，可在 simulate 的可视化选项中切换其显示；显示状态不会
+关闭物理碰撞。导出场景没有机器人，出生点只记录在元数据中，不会自动生成
+机器人或执行策略。
+
+当前桥接使用 mjlab 已解码的 RGBA，与其 Viser 数据语义一致，不保留原始高阶 SH；
+透明度 0/1 在导出有限 logit 时夹到 float32 epsilon / (1-epsilon)。
+`write_gaussian_ply(data, path, asset_id=...)` 也可供上层代码直接导出已过滤的
+`GaussianSplatData`，保留其裁剪和资产选择结果。
+
+资产适配测试（不要求安装 MuJoCo，也不需要显示器）：
+
+```bash
+MJLAB_SOURCE=/home/yzt/Documents/3DGS/mjlab \
+  python3 -m unittest discover -s tools/tests -v
+```
+
+`MJLAB_SOURCE` 用于对照本地 mjlab 的原始 Gaussian 加载器进行往返验证。
+完整 manifest/碰撞导出必须在 mjlab 环境验证；脚本会先编译场景，并在导出后
+重新加载 `scene.xml`，检查外部资源是否可用。
+Python passive viewer 的运行时资产加载、策略播放和 CPU sim2sim 尚需后续开发。
+
+## 14. Python passive viewer 接入入口（源码接口已实现）
+
+本分支的 `mujoco.viewer.launch_passive` 新增可选参数：
+
+```python
+with mujoco.viewer.launch_passive(
+    model, data, gaussian_ply="/tmp/mjlab-room1-aligned/visual.ply"
+) as viewer:
+    while viewer.is_running():
+        # 由上层执行策略/物理，并更新 data。
+        viewer.sync()
+```
+
+`model` 必须已经包含与 PLY 对齐的碰撞体。PLY 坐标已经是世界坐标，
+viewer 不再应用 manifest 变换。文件在调用线程校验，GL 资源在渲染线程创建。
+无 3DGS 的构建会明确拒绝此参数；不传参数保持原接口行为。
+当前入口限定 Linux + classic OpenGL 4.6 compatibility profile。
+GL 初始化失败仍采用现有行为：终端报告错误，继续显示普通 MuJoCo 场景。
+
+`tools/mjlab_assets.py` 同时提供上下文管理器 `launch_mjlab_viewer`，
+可在上层 Python 中导入后使用：
+
+```python
+with launch_mjlab_viewer(
+    env.unwrapped.sim.mj_model,
+    env.unwrapped.sim.mj_data,
+    env.unwrapped.scene.gaussian_splat_data,
+    env_idx=0,
+) as viewer:
+    # 在此复用 mjlab native viewer 的 GPU→CPU 状态同步及 viewer.sync()。
+    # 该管理器本身不执行策略或物理步进。
+    ...
+```
+
+该管理器按 `group_id[env_idx]` 选择资产，临时 PLY 保留到窗口上下文退出。
+当前资产选择在窗口存续期间固定；动态切换资产仍需后续接口。
+它只传递视觉资产，碰撞与出生点仍由 mjlab 初始化，避免二次导入。
+
+3DGS 配置与资源状态按渲染线程隔离，关闭时复位。对应无显示器测试：
+
+```bash
+cmake -S . -B build
+cmake --build build --target simulate mjgs_asset_test mjgs_lifecycle_test -j4
+ctest --test-dir build -R '^mjgs_(asset|lifecycle)_test$' --output-on-failure
+```
+
+注意：以上是新增的源码 API，必须构建本分支的 Python 扩展才能使用；
+仅重新编译独立 `simulate` 不会更新环境中的 Python 包。
+Python wheel 的源码/依赖打包、shader 嵌入和实际策略播放现已验证，见第 16 节。
+
+## 15. C++ simulate 直接加载 mjlab manifest
+
+独立 C++ `simulate` 现在可以直接读取 mjlab manifest v1，无需先运行 Python
+资产导出桥。新增编译依赖：
+
+```bash
+sudo apt install nlohmann-json3-dev libssl-dev
+cmake -S . -B build
+cmake --build build --target simulate mjgs_asset_test mjgs_lifecycle_test -j4
+```
+
+以 mjlab 的 room1 为例，仅加载场景外观和碰撞体：
+
+```bash
+./build/bin/simulate \
+  --scene-manifest /home/yzt/Documents/3DGS/mjlab/src/mjlab/asset_zoo/3dgs/room1/manifest.json
+```
+
+也可以保留机器人 XML，再附加 manifest 中的碰撞场景：
+
+```bash
+./build/bin/simulate /path/to/robot.xml \
+  --scene-manifest /home/yzt/Documents/3DGS/mjlab/src/mjlab/asset_zoo/3dgs/room1/manifest.json \
+  --scene-spawn-point default
+```
+
+原有 XML + PLY 加载方式保持可用：
+
+```bash
+./build/bin/simulate model/gaussian/viewer_demo.xml \
+  --gs-ply third_party/splatapult/data/test.ply
+```
+
+manifest 加载规则：
+
+- 校验 schema v1、右手 Z-up 米制坐标、资产类型、必需字段和未知字段。
+- 相对于 manifest 目录解析资产路径，拒绝越界路径，并校验 PLY、碰撞 MJCF
+  及声明依赖文件的 SHA-256；核对碰撞 XML 的文件引用与依赖列表。
+- 与 mjlab 碰撞接口一致，拒绝 include、关节、actuator、sensor、mocap
+  和没有启用碰撞的场景。
+- `world_from_scene` 的位置及 wxyz 四元数同时作用于 PLY 和碰撞场景。
+- 碰撞 geom 使用 manifest 指定分组（默认 3）；附加对象加 `manifest/` 前缀，
+  避免与基础机器人模型重名。
+- 机器人 XML 中已有的地面和碰撞体会保留；请使用不包含重复场景的机器人 XML。
+- 出生点默认选择 `default`，或唯一出生点；多个出生点没有默认值时必须指定名称。
+  **当前只校验并输出出生点的世界位姿，不自动修改机器人初态。**
+- manifest 不可与 `--gs-ply/scale/translate/rotate` 混用；仍可使用 `--gs-no-sh`、
+  截图参数以及 F8 显示开关。
+- PLY 仍须符合第 9 节的 C++ 加载格式；manifest 加载不会自动转换其他 PLY 编码。
+
+无窗口检查（不要求 DISPLAY，也不创建 OpenGL context）：
+
+```bash
+./build/bin/simulate \
+  --scene-manifest /home/yzt/Documents/3DGS/mjlab/src/mjlab/asset_zoo/3dgs/room1/manifest.json \
+  --scene-check
+```
+
+检查会编译模型，输出出生点、几何体名称、分组和初态世界位置；失败返回非零状态。
+它验证加载和编译，不验证 GPU 渲染。
+
+测试脚本仅依赖 Python 标准库：
+
+```bash
+python3 tools/test_simulate_manifest.py
+# 有图形会话时，额外验证 room1 和原 XML + PLY 的渲染截图：
+python3 tools/test_simulate_manifest.py --gpu
+# 可指定其他构建产物及真实 manifest：
+python3 tools/test_simulate_manifest.py \
+  --simulate ./build/bin/simulate --manifest /path/to/manifest.json
+```
+
+脚本覆盖真实 manifest 加载、非零四元数变换、碰撞分组、出生点世界坐标、
+机器人 XML 合并，以及错误版本、哈希、路径、位姿、分组、出生点、动态碰撞和
+参数冲突的拒绝行为。GPU 测试通过临时 PPM 截图验证加载，结束后清理临时文件。
+独立 C++ manifest 入口不会代替 mjlab Python play 的场景构建流程。
+
+## 16. 构建 3DGS Python wheel 并接入 mjlab native
+
+Python 包使用版本 `3.16.0+3dgs`，底层 MuJoCo 引擎版本仍是 3.16.0。
+适配后的 shader 已嵌入 C++ 扩展，安装后不依赖源码或构建目录；sdist 包含
+Splatapult 源码、shader 和许可证。Linux wheel 通过 auditwheel 打包 GLEW。
+OpenGL/GLX 驱动及其 dispatch 库由宿主系统提供，不随 wheel 携带；SDL2、GLM、
+Eigen 等仍需在编译时安装。
+
+### 16.1 准备构建环境
+
+下面以本机 mjlab 使用的 **Python 3.13** 为例，所有构建命令在本仓库根目录执行。
+wheel 与 Python 小版本绑定：Python 3.13 对应 `cp313`，Python 3.12 对应
+`cp312`，不能交叉安装。可先确认目标环境的版本：
+
+```bash
+/home/yzt/Documents/3DGS/mjlab/.venv/bin/python --version
+cd /home/yzt/Documents/3DGS/mujoco
+```
+
+先按第 2、3 节安装系统编译依赖并初始化 Splatapult 子模块，再创建独立的打包环境：
+
+```bash
+uv venv /tmp/mjgs-wheel-env313 --python 3.13
+uv pip install --python /tmp/mjgs-wheel-env313/bin/python \
+  build setuptools wheel pybind11 absl-py auditwheel patchelf
+```
+
+### 16.2 编译原生库并生成 wheel
+
+打包脚本会安装已编译的原生库，因此需要先完成原生构建。下面使用独立的
+`build-wheel313/`，避免与其他编译器配置混用：
+
+```bash
+cmake -S . -B build-wheel313 \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_C_COMPILER=gcc-11 \
+  -DCMAKE_CXX_COMPILER=g++-11 \
+  -DMUJOCO_BUILD_SIMULATE=ON \
+  -DMUJOCO_ENABLE_3DGS=ON \
+  -DMUJOCO_BUILD_TESTS=OFF \
+  -DMUJOCO_BUILD_3DGS_TESTS=OFF \
+  -DMUJOCO_TEST_PYTHON_UTIL=OFF \
+  -DMUJOCO_USE_FILAMENT=OFF \
+  -DMUJOCO_USE_FILAMENT_MJR_COMPAT=OFF
+cmake --build build-wheel313 -j4
+
+MJGS_PYTHON=/tmp/mjgs-wheel-env313/bin/python \
+  MJGS_BUILD_DIR="$PWD/build-wheel313" \
+  CMAKE_BUILD_PARALLEL_LEVEL=4 \
+  MUJOCO_CMAKE_ARGS='-DCMAKE_C_COMPILER=gcc-11 -DCMAKE_CXX_COMPILER=g++-11' \
+  bash tools/build_3dgs_wheel.sh
+```
+
+若已经按第 4 节完整构建了 `build/`，可跳过上述 CMake 命令，将
+`MJGS_BUILD_DIR` 改为 `"$PWD/build"`。只编译独立 `simulate` 不等于生成 Python 包；
+还需要执行打包脚本，编译 Python `_simulate` 扩展。
+
+脚本依次安装原生库到临时目录、生成 sdist、从 sdist 编译 wheel，最后通过
+auditwheel 打包所需的非驱动动态库。并发默认为 4，可通过
+`CMAKE_BUILD_PARALLEL_LEVEL` 调整；`MJGS_STAGE_DIR` 可指定临时工作目录。
+CMake 的 Abseil、Eigen、GLFW 等依赖首次构建可能需要下载，可以通过
+`MUJOCO_CMAKE_ARGS` 的 `FETCHCONTENT_SOURCE_DIR_*` 指向已有源码缓存。
+当前默认目标为 Linux x86_64、glibc >= 2.35；修改 wheel 平台标签不会自动降低
+编译产物的系统兼容性要求。
+
+最终产物：
+
+- `dist/mujoco-3.16.0+3dgs-cp313-cp313-manylinux_2_35_x86_64.whl`：可安装的 Python 包。
+- `python/dist/mujoco-3.16.0+3dgs.tar.gz`：包含 Splatapult 源码及 shader 的源码包。
+
+构建 Python 3.12 包时，为其单独创建 `--python 3.12` 的环境，并将
+`MJGS_PYTHON` 指向该环境；输出文件标签相应变为 `cp312`。
+
+### 16.3 安装到 mjlab 并验证
+
+安装到 mjlab 所使用的环境。`--no-deps` 保留已经准备好的训练依赖，仅替换 MuJoCo：
+
+```bash
+uv pip install --python /home/yzt/Documents/3DGS/mjlab/.venv/bin/python \
+  --reinstall --no-deps \
+  /home/yzt/Documents/3DGS/mujoco/dist/mujoco-3.16.0+3dgs-cp313-cp313-manylinux_2_35_x86_64.whl
+
+/home/yzt/Documents/3DGS/mjlab/.venv/bin/python -c \
+  'from importlib.metadata import version; import mujoco.gaussian; print(version("mujoco"))'
+```
+
+应输出 `3.16.0+3dgs`，且能导入 `mujoco.gaussian`。版本查询使用包元数据；
+底层引擎的版本仍是 `3.16.0`。安装包用于已有 mjlab 环境；新环境应先安装 mjlab
+及其运行依赖。
+
+mjlab native viewer 已增加资产桥接：由 mjlab 解析 manifest、构建碰撞模型，
+将标准化 Gaussian 数据交给 `mujoco.gaussian.GaussianAssets`，在临时 PLY 中
+缓存当前资产。切换到使用其他资产的环境时，通过 `Handle.load_gaussian_ply()`
+提交渲染线程更新。窗口关闭后清理缓存，已有 GPU→CPU 状态同步和扰动力流程继续使用。
+没有 Gaussian 场景时不加载资产桥，可继续使用普通 MuJoCo native viewer。
+
+在 mjlab 环境运行默认 demo 的 3DGS native 版本：
+
+```bash
+cd /home/yzt/Documents/3DGS/mjlab
+uv run --no-sync demo --use-3dgs True --viewer native --num-envs 1 \
+  --scene-manifest src/mjlab/asset_zoo/3dgs/room1/manifest.json
+```
+
+**手工安装自定义 wheel 后使用 `--no-sync`，避免 uv 按原锁文件换回官方包。**
+使用独立环境时可以设置 `UV_PROJECT_ENVIRONMENT`，并通过 `uv run --python`
+指定该环境的 Python。demo 使用其默认 G1 tracking checkpoint 和 motion，
+复用 mjlab 的下载缓存及 SHA-256 校验。
+
+验证已安装 wheel（从其他工作目录运行也应成功）：
+
+```bash
+/home/yzt/Documents/3DGS/mjlab/.venv/bin/python \
+  /home/yzt/Documents/3DGS/mujoco/tools/test_python_3dgs.py --gpu
+```
+
+`--gpu` 会打开 native viewer，需要可用的桌面显示及 OpenGL 4.6 compatibility
+上下文；去掉此参数可只验证资产序列化、缓存和清理。
+
+该脚本检查序列化、资产缓存、碰撞几何隐藏时的渲染、运行时切换、窗口重开和清理。
+`Handle.gaussian_status` 返回 `empty/pending/ready/error: ...` 等状态，便于集成测试
+发现 GL 初始化失败，避免只依赖终端日志。
+
+有限步真实策略播放测试：
+
+```bash
+cd /home/yzt/Documents/3DGS/mjlab
+uv run --no-sync python /home/yzt/Documents/3DGS/mujoco/tools/smoke_mjlab_native.py --steps 100
+```
+
+测试调用实际 demo CLI，固定 `--viewer native` 和 room1 manifest，完成指定数量的
+策略步进后自动关闭，并检查 3DGS 渲染器是否就绪；不修改策略、物理步进或碰撞模型。
+
+### 使用已有 Unitree G1 velocity 策略
+
+指定训练目录时，测试脚本按数字迭代号选择最新 `model_<iteration>.pt`。
+本机目录对应最新文件为 `model_10000.pt`，网络输入 98 维、动作输出 29 维。
+该策略包含 phase 观测，应加载原训练仓库的 `Unitree-G1-Flat` 配置：
+
+```bash
+cd /home/yzt/Documents/3DGS/mjlab
+uv run --no-sync python /home/yzt/Documents/3DGS/mujoco/tools/smoke_mjlab_native.py \
+  --checkpoint-dir /home/yzt/humanoid/Unitree/unitree_rl_mjlab/logs/rsl_rl/g1_velocity/2026-08-25_12-42-10 \
+  --task-source /home/yzt/humanoid/Unitree/unitree_rl_mjlab \
+  --task-id Unitree-G1-Flat --steps 100
+```
+
+也可以通过 `--checkpoint /path/to/model_10000.pt` 显式指定文件。
+脚本读取原训练任务源码，不改写训练仓库或 checkpoint；room1 manifest 由当前
+mjlab 的 play 流程应用。原训练工程依赖 mjlab 1.2.0，而此处目标 mjlab 为 1.6.0，
+任务 API、观测和 checkpoint 的兼容性需要实际播放验证；不能仅凭网络维度一致认定迁移成功。
+
+### 2026-10-29 实测结果（已通过）
+
+在 `/home/yzt/Documents/3DGS/mjlab/.venv` 中验证：Python 3.13.17、Torch 2.14.0、
+mjlab 1.6.0、MuJoCo/Warp 3.16.0，安装的自定义 Python 包版本为 `3.16.0+3dgs`。
+对应 wheel：`dist/mujoco-3.16.0+3dgs-cp313-cp313-manylinux_2_35_x86_64.whl`。
+
+- checkpoint：`2026-08-25_12-42-10/model_10000.pt`。
+- task：原训练代码的 `Unitree-G1-Flat`；actor 98 维、critic 113 维、动作 29 维。
+- scene：room1 原始 manifest；成功加载 799,083 个 Gaussian。
+- native viewer 渲染状态 `ready`，完成 100 个真实策略步并正常关闭。
+- 8 项 native 桥接、动作和 G1 场景配置测试通过；修改文件的 Ruff、Ty 检查通过。
+
+完整日志：`build/validation/room1-native-model10000.log`。
+这验证了策略加载、步进、资产渲染及窗口生命周期；100 步测试不代表长期运动稳定性评估。
+仿真仍由 mjlab 的 MuJoCo Warp 执行，native viewer 同步显示其状态。
+
+为适配原训练工程使用的 mjlab 1.2 API，`tools/unitree_g1_compat.py` 仅加载所需的
+G1 velocity 任务，在进程内适配旧资产加载接口和碰撞默认值；原训练源码及 checkpoint
+保持原样。当前 mjlab 的任务公共模块也补齐了既有注册代码引用的 3DGS 场景函数和常量。
+
+重复有限步测试：
+
+```bash
+cd /home/yzt/Documents/3DGS/mjlab
+uv run --no-sync python /home/yzt/Documents/3DGS/mujoco/tools/smoke_mjlab_native.py \
+  --checkpoint-dir /home/yzt/humanoid/Unitree/unitree_rl_mjlab/logs/rsl_rl/g1_velocity/2026-08-25_12-42-10 \
+  --task-source /home/yzt/humanoid/Unitree/unitree_rl_mjlab \
+  --task-id Unitree-G1-Flat --steps 100
+```
+
+正常交互播放（窗口由用户关闭）：
+
+```bash
+cd /home/yzt/Documents/3DGS/mjlab
+uv run --no-sync python /home/yzt/Documents/3DGS/mujoco/tools/play_unitree_native.py \
+  --task-source /home/yzt/humanoid/Unitree/unitree_rl_mjlab \
+  Unitree-G1-Flat \
+  --checkpoint-file /home/yzt/humanoid/Unitree/unitree_rl_mjlab/logs/rsl_rl/g1_velocity/2026-08-25_12-42-10/model_10000.pt \
+  --viewer native --num-envs 1 \
+  --scene-manifest /home/yzt/Documents/3DGS/mjlab/src/mjlab/asset_zoo/3dgs/room1/manifest.json
+```
+
+若终端加载了 ROS 的 Python 路径或其他自定义动态库路径，测试时可在上述命令前使用
+`env -u PYTHONPATH -u LD_LIBRARY_PATH`；运行 pytest 时还可设置
+`PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`，避免 ROS pytest 插件干扰。
+
+## 17. 使用 mjlab demo ONNX 做独立 CPU sim2sim
+
+`tools/export_mjlab_demo_cpu.py` 将 mjlab 默认 tracking demo 的 checkpoint 导出为
+ONNX，并打包 MuJoCo 模型、参考动作和接口配置；`tools/play_mjlab_cpu.py` 使用
+**MuJoCo CPU `mj_step` + ONNX Runtime CPU** 独立运行。播放时不导入 mjlab、Torch
+或 Warp；native 窗口由本仓库 Python 包中的 simulate 渲染。
+
+目前支持 demo 对应的 `Mjlab-Tracking-Flat-Unitree-G1`，不是任意 ONNX 策略的
+通用播放器。该策略输入 160 维、输出 29 维，ONNX 内已包含训练观测归一化。
+
+### 17.1 导出测试包
+
+先完成第 16 节自定义 wheel 的安装。导出环境还需要 `onnx`、`onnxruntime`；
+若缺少，可用 `uv pip install --python .venv/bin/python onnx onnxruntime` 安装。
+在已准备好的 mjlab 环境执行：
+
+```bash
+cd /home/yzt/Documents/3DGS/mjlab
+uv run --no-sync python /home/yzt/Documents/3DGS/mujoco/tools/export_mjlab_demo_cpu.py \
+  /home/yzt/Documents/3DGS/mujoco/build/demo-cpu-room1 \
+  --scene-manifest src/mjlab/asset_zoo/3dgs/room1/manifest.json \
+  --reference-steps 100
+```
+
+输出目录必须尚不存在。默认使用 CUDA 在 mjlab 中生成对照数据，官方 demo
+checkpoint 和 motion 首次运行会下载并校验 SHA-256；已有文件可通过
+`--checkpoint /path/demo_ckpt.pt --motion /path/motion.npz` 指定。
+不传 `--scene-manifest` 时保留任务默认平面；manifest 的路径、变换、碰撞和可选
+`--scene-spawn-point` 由 mjlab 的资产接口解析后写入导出结果。
+
+为便于复现，测试关闭 startup/interval 随机事件与终止重置，使用起始帧采样及
+零关节重置噪声。参考序列结束前停止，不做自动重采样；这些配置记录在
+`config.json`。机器人执行器增益、阻尼、力矩限幅、armature、接触参数与场景碰撞
+由编译模型保留，不在播放器中另写一套 PD 参数。
+
+测试包内容：
+
+| 文件 | 用途 |
+| --- | --- |
+| `policy.onnx` | 含归一化的策略及 mjlab exporter 附带的参考动作输出 |
+| `scene.mjb` | 包含机器人、执行器、传感器和 manifest 碰撞的编译模型 |
+| `visual.ply` | 变换后的 3DGS 资产；没有 Gaussian 场景时不生成 |
+| `motion.npz` | 播放器构建 tracking 指令所需的参考关节和刚体姿态 |
+| `initial.npz` | 与 mjlab 对照一致的初始仿真状态 |
+| `config.json` | 关节/执行器映射、动作缩放、观测顺序与控制频率 |
+| `reference.npz` | mjlab GPU 生成的状态、观测、策略动作和控制目标 |
+| `warp-report.json` | 对照序列的根部高度与参考躯干位置误差 |
+
+`scene.mjb` 要求使用导出时相同的 MuJoCo 引擎版本；升级后应重新导出。
+
+### 17.2 无窗口验证和 native 播放
+
+无窗口测试可在没有桌面显示的环境运行：
+
+```bash
+cd /home/yzt/Documents/3DGS/mjlab
+uv run --no-sync python /home/yzt/Documents/3DGS/mujoco/tools/play_mjlab_cpu.py \
+  /home/yzt/Documents/3DGS/mujoco/build/demo-cpu-room1 \
+  --validate --steps 1000 --max-anchor-error 0.5 \
+  --report /home/yzt/Documents/3DGS/mujoco/build/demo-cpu-room1/cpu-report.json
+```
+
+`--validate` 将同一组 GPU 状态放入 CPU 模型，比较观测、ONNX 动作和控制目标；
+最大绝对误差上限分别为 `2e-4`、`2e-3`、`2e-3`，超限返回失败。
+独立 rollout 的物理步长为 0.005 秒、decimation 为 4，即每 0.02 秒推理一次。
+`--max-anchor-error 0.5` 要求参考躯干位置误差不超过 0.5 米；不传时仅检查有限数值
+并报告误差，不能据此判断动作跟踪成功。
+
+打开 native 3DGS 窗口：
+
+```bash
+uv run --no-sync python /home/yzt/Documents/3DGS/mujoco/tools/play_mjlab_cpu.py \
+  /home/yzt/Documents/3DGS/mujoco/build/demo-cpu-room1 \
+  --viewer native --steps 1000 --max-anchor-error 0.5 \
+  --report /home/yzt/Documents/3DGS/mujoco/build/demo-cpu-room1/native-report.json
+```
+
+播放 1000 个控制步后自动退出。运行时只需要自定义 MuJoCo 包、NumPy 和
+ONNX Runtime；可在另一个装有这些依赖的 Python 环境直接运行同一脚本与测试包。
+native 模式仍需要 OpenGL 4.6 compatibility 和桌面显示。
+
+### 17.3 验证范围
+
+2026-10-29 使用 room1 和官方 demo checkpoint 实测：100 组状态的观测最大绝对
+误差 `3.64e-7`，ONNX 动作误差 `2.86e-6`，控制目标误差 `7.84e-7`。
+CPU 无窗口和 native 两种模式均完成 1000 步（20 秒），平均参考躯干位置误差
+约 0.071 米、最大约 0.191 米；native 加载 799,083 个 Gaussian，状态为 `ready`。
+
+进一步的完整序列验证结果：
+
+| 场景与检查 | 结果 |
+| --- | --- |
+| 默认平面，CPU 独立 6572 步 / 131.44 秒 | 通过 0.5 米阈值；平均误差 0.068 米，最大 0.260 米 |
+| room1，完整 6572 组相同状态的接口对比 | 通过；观测/动作最大误差均约 `5.72e-6`，控制目标约 `3.13e-6` |
+| room1，CPU 完整独立序列 | 未通过；发生跌倒，最大误差约 3.93 米 |
+| room1，mjlab Warp 完整对照序列 | 同样未通过；最大误差约 3.36 米 |
+
+room1 的 CPU 与 GPU 均约在第 1605 步首次超过 0.5 米误差。默认平面成功、
+room1 两端均失败，说明场景变更后的动作可执行性需要单独验证，不能只按接口
+对齐来保证；具体导致失稳的接触尚未定位。当前已验证独立 CPU sim2sim 链路，
+**不能宣称该 demo 策略在 room1 的完整动作序列稳定通过**。
+
+复现默认平面的完整序列测试（输出目录需尚不存在）：
+
+```bash
+cd /home/yzt/Documents/3DGS/mjlab
+uv run --no-sync python /home/yzt/Documents/3DGS/mujoco/tools/export_mjlab_demo_cpu.py \
+  /home/yzt/Documents/3DGS/mujoco/build/demo-cpu-plane --reference-steps 100
+uv run --no-sync python /home/yzt/Documents/3DGS/mujoco/tools/play_mjlab_cpu.py \
+  /home/yzt/Documents/3DGS/mujoco/build/demo-cpu-plane \
+  --validate --steps 6572 --max-anchor-error 0.5 \
+  --report /home/yzt/Documents/3DGS/mujoco/build/demo-cpu-plane/cpu-report.json
+```
+
+完整 room1 对照数据的导出参数为 `--reference-steps 6572`，本机测试包位于
+`build/demo-cpu-room1-full/`，其中 `warp-report.json` 和 `cpu-report.json` 保留
+完整结果；这些大型测试产物位于忽略的 `build/` 目录，不随源码提交。
+
+## 18. TODO
+
+### 大规模 PLY 的渲染资源控制（尚未实现）
+
+当前会加载全部 Gaussian，并按窗口视口尺寸渲染。点数过多时可能占用较多显存，
+增加排序和绘制开销，进而影响仿真播放流畅度。计划增加以下功能；参数名称为
+拟议接口，当前版本不能使用：
+
+- [ ] 点数上限：`--gs-max-points 300000`，加载时进行确定性降采样，在上传 GPU
+  前限制点数，减少显存、排序和绘制开销；输出原始和保留点数。
+- [ ] 渲染分辨率比例：`--gs-render-scale 0.5`，降低 3DGS 内部渲染分辨率，正确
+  处理与机器人画面的深度遮挡及合成。该选项主要减少像素开销，不替代点数限制。
+- [ ] 显示刷新率上限：`--gs-max-fps 30`，限制渲染刷新频率，减少资源争用，
+  保持物理步进与策略控制频率独立。
+- [ ] 将上述选项统一提供给 C++ simulate、Python viewer 和 mjlab native 资产桥，
+  支持 XML + PLY 与 manifest 两种资产入口。
+- [ ] 使用不同点数和分辨率测试显存占用、帧率、策略步进耗时及画质，验证默认
+  不降采样时的兼容性，以及运行时切换资产后的资源释放。
+
+这些优化只作用于视觉资产和渲染，不修改 manifest 碰撞模型、物理步长或策略
+控制参数。点数限制应优先实现；降采样和低分辨率会损失视觉细节，需要实测取舍。
