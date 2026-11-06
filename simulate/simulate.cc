@@ -1110,7 +1110,7 @@ void MakeVisualizationSection(mj::Simulate* sim, const mjModel* m) {
 void Make3DgsSection(mj::Simulate* sim) {
   mjuiDef def3Dgs[] = {
       {mjITEM_SECTION, "3DGS", mjPRESERVE, nullptr, ""},
-      {mjITEM_RADIO, "", 5, mjgs::HiddenState(), "Show\nHide (F8)"},
+      {mjITEM_RADIO, "", 2, mjgs::HiddenState(), "Show\nHide (F8)"},
       {mjITEM_END}
   };
   mjui_add(&sim->ui0, def3Dgs);

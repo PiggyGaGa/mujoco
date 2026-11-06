@@ -2,6 +2,26 @@
 
 本文记录当前 `feature/3dgs` 分支中 MuJoCo `simulate` 与 Splatapult 3D Gaussian Splatting（3DGS）的编译、测试和运行方法。
 
+
+## 路径约定
+
+文中的示例路径需要按自己的目录设置。涉及两个仓库的命令执行前，在同一终端设置：
+
+```bash
+export MUJOCO_REPO=/path/to/mujoco
+export MJLAB_REPO=/path/to/mjlab
+```
+
+`MUJOCO_REPO` 指向本仓库，`MJLAB_REPO` 指向上层 mjlab-3dgs 仓库；请使用绝对路径。
+涉及已有 Unitree 策略的示例还需设置原训练仓库和 checkpoint 目录：
+
+```bash
+export UNITREE_TASK_REPO=/path/to/unitree_rl_mjlab
+export CHECKPOINT_DIR=/path/to/g1_velocity/run_directory
+```
+
+这些是路径占位示例，不是需要创建的固定目录。仅编译独立查看器时不需要 mjlab 和策略目录。
+
 ## 1. Requirements
 
 本项目需要满足以下功能需求：
@@ -29,9 +49,10 @@
 ```bash
 sudo apt update
 sudo apt install -y \
-  build-essential cmake git \
+  build-essential gcc-11 g++-11 cmake git \
   libgl1-mesa-dev libglew-dev libglm-dev \
-  libeigen3-dev libsdl2-dev libglfw3-dev
+  libeigen3-dev libsdl2-dev libglfw3-dev \
+  nlohmann-json3-dev libssl-dev
 ```
 
 使用 NVIDIA 显卡时，先确认驱动与 OpenGL：
@@ -74,7 +95,9 @@ git submodule status
 在仓库根目录执行：
 
 
-**一定要指定C++11编译器，否则会报错**
+下面沿用本机验证过的 GCC 11（`gcc-11` / `g++-11`）。GCC 11 是编译器版本，
+不是 C++11 语言标准；语言标准由项目 CMake 配置决定。更换编译器时使用新的
+构建目录，避免沿用旧的 CMakeCache。
 
 ```bash
 cmake -S . -B build \
@@ -85,7 +108,7 @@ cmake -S . -B build \
   -DMUJOCO_USE_FILAMENT=OFF \
   -DMUJOCO_USE_FILAMENT_MJR_COMPAT=OFF \
   -DCMAKE_C_COMPILER=gcc-11 \
-  -DCMAKE_CXX_COMPILER=g++-11 \
+  -DCMAKE_CXX_COMPILER=g++-11
 
 cmake --build build -j"$(nproc)"
 ```
@@ -387,8 +410,8 @@ ctest --test-dir build -R '^mjgs_asset_test$' --output-on-failure
 在已安装 mjlab 及其依赖的环境中运行（输出目录必须尚不存在）：
 
 ```bash
-cd /home/yzt/Documents/3DGS/mjlab
-uv run python /home/yzt/Documents/3DGS/mujoco/tools/mjlab_assets.py \
+cd "$MJLAB_REPO"
+uv run python "$MUJOCO_REPO"/tools/mjlab_assets.py \
   src/mjlab/asset_zoo/3dgs/room1/manifest.json \
   /tmp/mjlab-room1-aligned
 ```
@@ -406,7 +429,7 @@ uv run python /home/yzt/Documents/3DGS/mujoco/tools/mjlab_assets.py \
 查看对齐结果：
 
 ```bash
-cd /home/yzt/Documents/3DGS/mujoco
+cd "$MUJOCO_REPO"
 ./build/bin/simulate /tmp/mjlab-room1-aligned/scene.xml \
   --gs-ply /tmp/mjlab-room1-aligned/visual.ply --gs-no-sh
 ```
@@ -424,7 +447,7 @@ cd /home/yzt/Documents/3DGS/mujoco
 资产适配测试（不要求安装 MuJoCo，也不需要显示器）：
 
 ```bash
-MJLAB_SOURCE=/home/yzt/Documents/3DGS/mjlab \
+MJLAB_SOURCE="$MJLAB_REPO" \
   python3 -m unittest discover -s tools/tests -v
 ```
 
@@ -498,14 +521,14 @@ cmake --build build --target simulate mjgs_asset_test mjgs_lifecycle_test -j4
 
 ```bash
 ./build/bin/simulate \
-  --scene-manifest /home/yzt/Documents/3DGS/mjlab/src/mjlab/asset_zoo/3dgs/room1/manifest.json
+  --scene-manifest "$MJLAB_REPO"/src/mjlab/asset_zoo/3dgs/room1/manifest.json
 ```
 
 也可以保留机器人 XML，再附加 manifest 中的碰撞场景：
 
 ```bash
 ./build/bin/simulate /path/to/robot.xml \
-  --scene-manifest /home/yzt/Documents/3DGS/mjlab/src/mjlab/asset_zoo/3dgs/room1/manifest.json \
+  --scene-manifest "$MJLAB_REPO"/src/mjlab/asset_zoo/3dgs/room1/manifest.json \
   --scene-spawn-point default
 ```
 
@@ -537,7 +560,7 @@ manifest 加载规则：
 
 ```bash
 ./build/bin/simulate \
-  --scene-manifest /home/yzt/Documents/3DGS/mjlab/src/mjlab/asset_zoo/3dgs/room1/manifest.json \
+  --scene-manifest "$MJLAB_REPO"/src/mjlab/asset_zoo/3dgs/room1/manifest.json \
   --scene-check
 ```
 
@@ -570,30 +593,67 @@ Eigen 等仍需在编译时安装。
 
 ### 16.1 准备构建环境
 
-下面以本机 mjlab 使用的 **Python 3.13** 为例，所有构建命令在本仓库根目录执行。
-wheel 与 Python 小版本绑定：Python 3.13 对应 `cp313`，Python 3.12 对应
-`cp312`，不能交叉安装。可先确认目标环境的版本：
+以下命令在本仓库根目录执行，先完成第 2、3 节的系统依赖安装和子模块初始化。
+需要已安装 `uv`；也可以用目标环境的 `python -m pip install` 安装下列 Python 依赖。
+当前脚本使用 `tomllib` 读取版本，要求构建解释器为 **Python 3.11 或以上**。
+wheel 与 Python 小版本和平台绑定：Python 3.13 对应 `cp313`，3.12 对应 `cp312`，
+不能交叉安装。先确认最终运行 mjlab 的解释器版本：
 
 ```bash
-/home/yzt/Documents/3DGS/mjlab/.venv/bin/python --version
-cd /home/yzt/Documents/3DGS/mujoco
+cd "$MUJOCO_REPO"
+"$MJLAB_REPO/.venv/bin/python" --version
 ```
 
-先按第 2、3 节安装系统编译依赖并初始化 Splatapult 子模块，再创建独立的打包环境：
+下面两种环境任选一种。后续命令通过 `MJGS_PYTHON` 使用选中的解释器；请在同一
+终端依次执行。如果换了终端，需要重新设置该变量。
+
+**方式 A：使用已有 mjlab 环境。** 会在该环境中安装构建工具；生成 wheel 本身
+不会替换环境中已安装的 MuJoCo，第 16.3 节才执行安装。
 
 ```bash
-uv venv /tmp/mjgs-wheel-env313 --python 3.13
-uv pip install --python /tmp/mjgs-wheel-env313/bin/python \
+export MJGS_PYTHON="$MJLAB_REPO/.venv/bin/python"
+uv pip install --python "$MJGS_PYTHON" \
   build setuptools wheel pybind11 absl-py auditwheel patchelf
 ```
 
-### 16.2 编译原生库并生成 wheel
-
-打包脚本会安装已编译的原生库，因此需要先完成原生构建。下面使用独立的
-`build-wheel313/`，避免与其他编译器配置混用：
+**方式 B：创建独立打包环境。** 下面以 Python 3.13 为例；构建 3.12 包时，将环境
+创建命令中的 `3.13` 和目录名中的 `313` 分别换为 `3.12`、`312`，并使用对应解释器。
+打包环境放在仓库外，避免源码包收集时混入环境文件；`/tmp` 中的环境可能被系统清理。
 
 ```bash
-cmake -S . -B build-wheel313 \
+uv venv "$HOME/.venvs/mjgs-wheel-env313" --python 3.13
+export MJGS_PYTHON="$HOME/.venvs/mjgs-wheel-env313/bin/python"
+uv pip install --python "$MJGS_PYTHON" \
+  build setuptools wheel pybind11 absl-py auditwheel patchelf
+```
+
+构建前检查解释器和工具是否可用：
+
+```bash
+"$MJGS_PYTHON" --version
+"$MJGS_PYTHON" -c 'import tomllib, build, setuptools, absl; print("Python build dependencies OK")'
+"$MJGS_PYTHON" -m build --version
+"$MJGS_PYTHON" -m auditwheel --version
+patchelf --version
+```
+
+若 `patchelf` 不在当前 PATH，可使用 `"$(dirname "$MJGS_PYTHON")/patchelf" --version`
+检查。打包脚本会把解释器所在目录加入 PATH。脚本设置了
+`MUJOCO_SKIP_BUILD_DEPS=1` 并使用 `--no-isolation`，因此这些依赖必须提前装好。
+
+### 16.2 编译原生库并生成 wheel
+
+整个流程沿用原来的 **原生库 → sdist → wheel**，最后增加 Linux 动态依赖修复。
+原生 CMake 构建和 Python 扩展构建是两个阶段；编译好 `build/bin/simulate` 不会
+更新 Python 包中的 `_simulate`。
+
+**第一步：编译原生库。** 以下统一使用 `build-wheel/`。它与打包环境目录是不同
+目录，不要混用。若已经按第 4 节完整构建了 `build/`，可以跳过此步，在下一步
+将 `MJGS_BUILD_DIR` 指向 `"$PWD/build"`。若只编译过部分 target，应先完成全量构建，
+避免安装时缺少其他配置启用的产物。
+
+```bash
+cmake -S . -B build-wheel \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_C_COMPILER=gcc-11 \
   -DCMAKE_CXX_COMPILER=g++-11 \
@@ -604,45 +664,103 @@ cmake -S . -B build-wheel313 \
   -DMUJOCO_TEST_PYTHON_UTIL=OFF \
   -DMUJOCO_USE_FILAMENT=OFF \
   -DMUJOCO_USE_FILAMENT_MJR_COMPAT=OFF
-cmake --build build-wheel313 -j4
-
-MJGS_PYTHON=/tmp/mjgs-wheel-env313/bin/python \
-  MJGS_BUILD_DIR="$PWD/build-wheel313" \
-  CMAKE_BUILD_PARALLEL_LEVEL=4 \
-  MUJOCO_CMAKE_ARGS='-DCMAKE_C_COMPILER=gcc-11 -DCMAKE_CXX_COMPILER=g++-11' \
-  bash tools/build_3dgs_wheel.sh
+cmake --build build-wheel -j4
 ```
 
-若已经按第 4 节完整构建了 `build/`，可跳过上述 CMake 命令，将
-`MJGS_BUILD_DIR` 改为 `"$PWD/build"`。只编译独立 `simulate` 不等于生成 Python 包；
-还需要执行打包脚本，编译 Python `_simulate` 扩展。
+**第二步：生成源码包和 wheel。** 确保第 16.1 节的 `MJGS_PYTHON` 已 export：
 
-脚本依次安装原生库到临时目录、生成 sdist、从 sdist 编译 wheel，最后通过
-auditwheel 打包所需的非驱动动态库。并发默认为 4，可通过
-`CMAKE_BUILD_PARALLEL_LEVEL` 调整；`MJGS_STAGE_DIR` 可指定临时工作目录。
+```bash
+MJGS_BUILD_DIR="$PWD/build-wheel" \
+CMAKE_BUILD_PARALLEL_LEVEL=4 \
+MUJOCO_CMAKE_ARGS='-DCMAKE_C_COMPILER=gcc-11 -DCMAKE_CXX_COMPILER=g++-11' \
+bash tools/build_3dgs_wheel.sh
+```
+
+如果使用已有的 `build/` 和 mjlab 环境，也可用一条完整命令指定所有参数：
+
+```bash
+MJGS_PYTHON="$MJLAB_REPO/.venv/bin/python" \
+MJGS_BUILD_DIR="$PWD/build" \
+CMAKE_BUILD_PARALLEL_LEVEL=4 \
+MUJOCO_CMAKE_ARGS='-DCMAKE_C_COMPILER=gcc-11 -DCMAKE_CXX_COMPILER=g++-11' \
+bash tools/build_3dgs_wheel.sh
+```
+
+每行末尾的 `\` 后不能有空格。多行赋值若不使用续行或 `export`，变量不会传给
+脚本，脚本可能退回使用系统的 `python3`。不要在 `build/` 或 `python/` 子目录中
+直接照抄这些命令，否则 `$PWD/build` 和脚本相对路径会指向错误位置。
+
+脚本实际执行顺序：
+
+1. 将 `MJGS_BUILD_DIR` 的原生构建产物安装到临时工作目录的 `runtime/`。
+2. 调用 `python/make_sdist.sh`，生成绑定代码并收集 simulate、Splatapult 源码、
+   shader、CMake 脚本和许可证，生成 `python/dist/mujoco-<版本>.tar.gz`。
+3. 解压 sdist，通过选中的 Python 执行 `python -m build --wheel --no-isolation`，
+   启用 3DGS，重新编译 Python 扩展并收集 MuJoCo 动态库和头文件。
+4. 执行 `auditwheel repair`，收集 GLEW 等非驱动动态依赖，将最终 wheel 写入根目录 `dist/`。
+   OpenGL/GLX dispatch 库由宿主系统提供。
+
+这里仍然使用原来的 sdist 构建机制，手动用 `pip wheel` 构建同一 sdist 也可以，
+但仍须设置原生库路径、3DGS CMake 参数并处理动态依赖。不能只运行
+`make_sdist.sh` 就把生成的 tar.gz 当作已编译 wheel。
+
+可调整的参数：
+
+| 变量 | 当前行为 |
+| --- | --- |
+| `MJGS_PYTHON` | 构建解释器；默认 `python3`，建议明确指定绝对路径 |
+| `MJGS_BUILD_DIR` | 已完成的原生构建目录；默认仓库下 `build/` |
+| `CMAKE_BUILD_PARALLEL_LEVEL` | Python 扩展构建并发数，默认 4；内存不足时调低 |
+| `MUJOCO_CMAKE_ARGS` | 传给 Python 扩展构建的额外 CMake 参数，不会重新配置原生构建目录 |
+| `MJGS_STAGE_DIR` | 临时工作目录；默认 `/tmp/mjgs-wheel.XXXXXX`，建议每次使用新目录 |
+| `MJGS_WHEEL_PLATFORM` | 默认 `manylinux_2_35_x86_64` |
+
+当前脚本针对 Linux x86_64，默认产物要求 glibc >= 2.35；修改平台标签不会降低
+实际编译产物的系统要求。可用 `uname -m`、`ldd --version` 检查本机平台。
+脚本当前使用空插件目录，**不会携带标准 MuJoCo 插件动态库**；需要插件的任务
+应先调整脚本中的 `MUJOCO_PLUGIN_PATH` 指向实际插件目录。
+
 CMake 的 Abseil、Eigen、GLFW 等依赖首次构建可能需要下载，可以通过
 `MUJOCO_CMAKE_ARGS` 的 `FETCHCONTENT_SOURCE_DIR_*` 指向已有源码缓存。
-当前默认目标为 Linux x86_64、glibc >= 2.35；修改 wheel 平台标签不会自动降低
-编译产物的系统兼容性要求。
+脚本成功后打印 `Wheel directory` 和 `Build stage`；临时目录保留，便于排错。
+以 Python 3.13 为例，最终产物为：
 
-最终产物：
+- `dist/mujoco-3.16.0+3dgs-cp313-cp313-manylinux_2_35_x86_64.whl`：修复后的可安装包。
+- `python/dist/mujoco-3.16.0+3dgs.tar.gz`：源码包。
 
-- `dist/mujoco-3.16.0+3dgs-cp313-cp313-manylinux_2_35_x86_64.whl`：可安装的 Python 包。
-- `python/dist/mujoco-3.16.0+3dgs.tar.gz`：包含 Splatapult 源码及 shader 的源码包。
+Python 3.12 的 wheel 标签相应为 `cp312`。安装前核对实际文件名：
 
-构建 Python 3.12 包时，为其单独创建 `--python 3.12` 的环境，并将
-`MJGS_PYTHON` 指向该环境；输出文件标签相应变为 `cp312`。
+```bash
+ls -lh dist/*.whl python/dist/*.tar.gz
+```
+
+**构建失败时按首个错误排查：**
+
+| 报错或现象 | 原因与处理 |
+| --- | --- |
+| 指定的 Python `No such file or directory` | 环境不存在或被清理；重新创建环境，或改为已有解释器的绝对路径 |
+| `No module named tomllib` | 实际解释器低于 3.11；检查 `MJGS_PYTHON` 是否正确传入及其版本 |
+| `No module named build` / `build.__main__` | 在选中的解释器环境安装上面的构建依赖，并用 `python -m build --version` 验证 |
+| `tar ... Not found` | 先检查前面 sdist 生成是否失败，不要直接使用旧的 tar.gz 继续构建 |
+| CMake 安装提示文件缺失 | 确认 `MJGS_BUILD_DIR` 正确，先完成该目录的 `cmake --build` |
+| 缺少 GLEW、SDL2、JSON 或 OpenSSL | 补齐第 2 节系统开发包，然后重试 |
+| 编译被 `Killed` | 可能内存不足；降低原生构建和 Python 扩展构建的并发数 |
+| auditwheel 提示平台不兼容 | 检查实际依赖的 glibc/符号版本，使用匹配目标平台的构建环境 |
+
+`make_sdist.sh` 当前未启用遇错立即退出，前面的失败可能伴随后续 tar 报错；
+应从日志中最早的失败位置处理。补齐 Python 工具后可以重跑打包脚本，
+无需仅因缺少 `build` 就重新编译原生 MuJoCo。
 
 ### 16.3 安装到 mjlab 并验证
 
 安装到 mjlab 所使用的环境。`--no-deps` 保留已经准备好的训练依赖，仅替换 MuJoCo：
 
 ```bash
-uv pip install --python /home/yzt/Documents/3DGS/mjlab/.venv/bin/python \
+uv pip install --python "$MJLAB_REPO/.venv/bin/python" \
   --reinstall --no-deps \
-  /home/yzt/Documents/3DGS/mujoco/dist/mujoco-3.16.0+3dgs-cp313-cp313-manylinux_2_35_x86_64.whl
+  ./dist/mujoco-3.16.0+3dgs-cp313-cp313-manylinux_2_35_x86_64.whl
 
-/home/yzt/Documents/3DGS/mjlab/.venv/bin/python -c \
+"$MJLAB_REPO/.venv/bin/python" -c \
   'from importlib.metadata import version; import mujoco.gaussian; print(version("mujoco"))'
 ```
 
@@ -659,7 +777,7 @@ mjlab native viewer 已增加资产桥接：由 mjlab 解析 manifest、构建�
 在 mjlab 环境运行默认 demo 的 3DGS native 版本：
 
 ```bash
-cd /home/yzt/Documents/3DGS/mjlab
+cd "$MJLAB_REPO"
 uv run --no-sync demo --use-3dgs True --viewer native --num-envs 1 \
   --scene-manifest src/mjlab/asset_zoo/3dgs/room1/manifest.json
 ```
@@ -672,8 +790,8 @@ uv run --no-sync demo --use-3dgs True --viewer native --num-envs 1 \
 验证已安装 wheel（从其他工作目录运行也应成功）：
 
 ```bash
-/home/yzt/Documents/3DGS/mjlab/.venv/bin/python \
-  /home/yzt/Documents/3DGS/mujoco/tools/test_python_3dgs.py --gpu
+"$MJLAB_REPO/.venv/bin/python" \
+  "$MUJOCO_REPO"/tools/test_python_3dgs.py --gpu
 ```
 
 `--gpu` 会打开 native viewer，需要可用的桌面显示及 OpenGL 4.6 compatibility
@@ -686,8 +804,8 @@ uv run --no-sync demo --use-3dgs True --viewer native --num-envs 1 \
 有限步真实策略播放测试：
 
 ```bash
-cd /home/yzt/Documents/3DGS/mjlab
-uv run --no-sync python /home/yzt/Documents/3DGS/mujoco/tools/smoke_mjlab_native.py --steps 100
+cd "$MJLAB_REPO"
+uv run --no-sync python "$MUJOCO_REPO"/tools/smoke_mjlab_native.py --steps 100
 ```
 
 测试调用实际 demo CLI，固定 `--viewer native` 和 room1 manifest，完成指定数量的
@@ -696,14 +814,14 @@ uv run --no-sync python /home/yzt/Documents/3DGS/mujoco/tools/smoke_mjlab_native
 ### 使用已有 Unitree G1 velocity 策略
 
 指定训练目录时，测试脚本按数字迭代号选择最新 `model_<iteration>.pt`。
-本机目录对应最新文件为 `model_10000.pt`，网络输入 98 维、动作输出 29 维。
+此前验证所用目录的最新文件为 `model_10000.pt`，网络输入 98 维、动作输出 29 维。
 该策略包含 phase 观测，应加载原训练仓库的 `Unitree-G1-Flat` 配置：
 
 ```bash
-cd /home/yzt/Documents/3DGS/mjlab
-uv run --no-sync python /home/yzt/Documents/3DGS/mujoco/tools/smoke_mjlab_native.py \
-  --checkpoint-dir /home/yzt/humanoid/Unitree/unitree_rl_mjlab/logs/rsl_rl/g1_velocity/2026-08-25_12-42-10 \
-  --task-source /home/yzt/humanoid/Unitree/unitree_rl_mjlab \
+cd "$MJLAB_REPO"
+uv run --no-sync python "$MUJOCO_REPO"/tools/smoke_mjlab_native.py \
+  --checkpoint-dir "$CHECKPOINT_DIR" \
+  --task-source "$UNITREE_TASK_REPO" \
   --task-id Unitree-G1-Flat --steps 100
 ```
 
@@ -714,7 +832,7 @@ mjlab 的 play 流程应用。原训练工程依赖 mjlab 1.2.0，而此处目�
 
 ### 2026-10-29 实测结果（已通过）
 
-在 `/home/yzt/Documents/3DGS/mjlab/.venv` 中验证：Python 3.13.17、Torch 2.14.0、
+在当时的 mjlab 虚拟环境中验证：Python 3.13.17、Torch 2.14.0、
 mjlab 1.6.0、MuJoCo/Warp 3.16.0，安装的自定义 Python 包版本为 `3.16.0+3dgs`。
 对应 wheel：`dist/mujoco-3.16.0+3dgs-cp313-cp313-manylinux_2_35_x86_64.whl`。
 
@@ -735,23 +853,23 @@ G1 velocity 任务，在进程内适配旧资产加载接口和碰撞默认值�
 重复有限步测试：
 
 ```bash
-cd /home/yzt/Documents/3DGS/mjlab
-uv run --no-sync python /home/yzt/Documents/3DGS/mujoco/tools/smoke_mjlab_native.py \
-  --checkpoint-dir /home/yzt/humanoid/Unitree/unitree_rl_mjlab/logs/rsl_rl/g1_velocity/2026-08-25_12-42-10 \
-  --task-source /home/yzt/humanoid/Unitree/unitree_rl_mjlab \
+cd "$MJLAB_REPO"
+uv run --no-sync python "$MUJOCO_REPO"/tools/smoke_mjlab_native.py \
+  --checkpoint-dir "$CHECKPOINT_DIR" \
+  --task-source "$UNITREE_TASK_REPO" \
   --task-id Unitree-G1-Flat --steps 100
 ```
 
 正常交互播放（窗口由用户关闭）：
 
 ```bash
-cd /home/yzt/Documents/3DGS/mjlab
-uv run --no-sync python /home/yzt/Documents/3DGS/mujoco/tools/play_unitree_native.py \
-  --task-source /home/yzt/humanoid/Unitree/unitree_rl_mjlab \
+cd "$MJLAB_REPO"
+uv run --no-sync python "$MUJOCO_REPO"/tools/play_unitree_native.py \
+  --task-source "$UNITREE_TASK_REPO" \
   Unitree-G1-Flat \
-  --checkpoint-file /home/yzt/humanoid/Unitree/unitree_rl_mjlab/logs/rsl_rl/g1_velocity/2026-08-25_12-42-10/model_10000.pt \
+  --checkpoint-file "$CHECKPOINT_DIR/model_10000.pt" \
   --viewer native --num-envs 1 \
-  --scene-manifest /home/yzt/Documents/3DGS/mjlab/src/mjlab/asset_zoo/3dgs/room1/manifest.json
+  --scene-manifest "$MJLAB_REPO"/src/mjlab/asset_zoo/3dgs/room1/manifest.json
 ```
 
 若终端加载了 ROS 的 Python 路径或其他自定义动态库路径，测试时可在上述命令前使用
@@ -775,9 +893,9 @@ ONNX，并打包 MuJoCo 模型、参考动作和接口配置；`tools/play_mjlab
 在已准备好的 mjlab 环境执行：
 
 ```bash
-cd /home/yzt/Documents/3DGS/mjlab
-uv run --no-sync python /home/yzt/Documents/3DGS/mujoco/tools/export_mjlab_demo_cpu.py \
-  /home/yzt/Documents/3DGS/mujoco/build/demo-cpu-room1 \
+cd "$MJLAB_REPO"
+uv run --no-sync python "$MUJOCO_REPO"/tools/export_mjlab_demo_cpu.py \
+  "$MUJOCO_REPO"/build/demo-cpu-room1 \
   --scene-manifest src/mjlab/asset_zoo/3dgs/room1/manifest.json \
   --reference-steps 100
 ```
@@ -813,11 +931,11 @@ checkpoint 和 motion 首次运行会下载并校验 SHA-256；已有文件可�
 无窗口测试可在没有桌面显示的环境运行：
 
 ```bash
-cd /home/yzt/Documents/3DGS/mjlab
-uv run --no-sync python /home/yzt/Documents/3DGS/mujoco/tools/play_mjlab_cpu.py \
-  /home/yzt/Documents/3DGS/mujoco/build/demo-cpu-room1 \
+cd "$MJLAB_REPO"
+uv run --no-sync python "$MUJOCO_REPO"/tools/play_mjlab_cpu.py \
+  "$MUJOCO_REPO"/build/demo-cpu-room1 \
   --validate --steps 1000 --max-anchor-error 0.5 \
-  --report /home/yzt/Documents/3DGS/mujoco/build/demo-cpu-room1/cpu-report.json
+  --report "$MUJOCO_REPO"/build/demo-cpu-room1/cpu-report.json
 ```
 
 `--validate` 将同一组 GPU 状态放入 CPU 模型，比较观测、ONNX 动作和控制目标；
@@ -829,10 +947,10 @@ uv run --no-sync python /home/yzt/Documents/3DGS/mujoco/tools/play_mjlab_cpu.py 
 打开 native 3DGS 窗口：
 
 ```bash
-uv run --no-sync python /home/yzt/Documents/3DGS/mujoco/tools/play_mjlab_cpu.py \
-  /home/yzt/Documents/3DGS/mujoco/build/demo-cpu-room1 \
+uv run --no-sync python "$MUJOCO_REPO"/tools/play_mjlab_cpu.py \
+  "$MUJOCO_REPO"/build/demo-cpu-room1 \
   --viewer native --steps 1000 --max-anchor-error 0.5 \
-  --report /home/yzt/Documents/3DGS/mujoco/build/demo-cpu-room1/native-report.json
+  --report "$MUJOCO_REPO"/build/demo-cpu-room1/native-report.json
 ```
 
 播放 1000 个控制步后自动退出。运行时只需要自定义 MuJoCo 包、NumPy 和
@@ -863,13 +981,13 @@ room1 两端均失败，说明场景变更后的动作可执行性需要单独�
 复现默认平面的完整序列测试（输出目录需尚不存在）：
 
 ```bash
-cd /home/yzt/Documents/3DGS/mjlab
-uv run --no-sync python /home/yzt/Documents/3DGS/mujoco/tools/export_mjlab_demo_cpu.py \
-  /home/yzt/Documents/3DGS/mujoco/build/demo-cpu-plane --reference-steps 100
-uv run --no-sync python /home/yzt/Documents/3DGS/mujoco/tools/play_mjlab_cpu.py \
-  /home/yzt/Documents/3DGS/mujoco/build/demo-cpu-plane \
+cd "$MJLAB_REPO"
+uv run --no-sync python "$MUJOCO_REPO"/tools/export_mjlab_demo_cpu.py \
+  "$MUJOCO_REPO"/build/demo-cpu-plane --reference-steps 100
+uv run --no-sync python "$MUJOCO_REPO"/tools/play_mjlab_cpu.py \
+  "$MUJOCO_REPO"/build/demo-cpu-plane \
   --validate --steps 6572 --max-anchor-error 0.5 \
-  --report /home/yzt/Documents/3DGS/mujoco/build/demo-cpu-plane/cpu-report.json
+  --report "$MUJOCO_REPO"/build/demo-cpu-plane/cpu-report.json
 ```
 
 完整 room1 对照数据的导出参数为 `--reference-steps 6572`，本机测试包位于
