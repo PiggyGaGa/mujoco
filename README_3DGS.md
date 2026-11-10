@@ -629,7 +629,7 @@ wheel 与 Python 小版本和平台绑定：Python 3.13 对应 `cp313`，3.12 �
 
 ```bash
 cd "$MUJOCO_REPO"
-"$MJLAB_REPO/.venv/bin/python" --version
+"$MJLAB_REPO/.env/bin/python" --version
 ```
 
 下面两种环境任选一种。后续命令通过 `MJGS_PYTHON` 使用选中的解释器；请在同一
@@ -639,7 +639,7 @@ cd "$MUJOCO_REPO"
 不会替换环境中已安装的 MuJoCo，第 16.3 节才执行安装。
 
 ```bash
-export MJGS_PYTHON="$MJLAB_REPO/.venv/bin/python"
+export MJGS_PYTHON="$MJLAB_REPO/.env/bin/python"
 uv pip install --python "$MJGS_PYTHON" \
   build setuptools wheel pybind11 absl-py auditwheel patchelf
 ```
@@ -649,8 +649,8 @@ uv pip install --python "$MJGS_PYTHON" \
 打包环境放在仓库外，避免源码包收集时混入环境文件；`/tmp` 中的环境可能被系统清理。
 
 ```bash
-uv venv "$HOME/.venvs/mjgs-wheel-env313" --python 3.13
-export MJGS_PYTHON="$HOME/.venvs/mjgs-wheel-env313/bin/python"
+uv env "$HOME/.envs/mjgs-wheel-env313" --python 3.13
+export MJGS_PYTHON="$HOME/.envs/mjgs-wheel-env313/bin/python"
 uv pip install --python "$MJGS_PYTHON" \
   build setuptools wheel pybind11 absl-py auditwheel patchelf
 ```
@@ -692,6 +692,8 @@ cmake -S . -B build-wheel \
   -DMUJOCO_TEST_PYTHON_UTIL=OFF \
   -DMUJOCO_USE_FILAMENT=OFF \
   -DMUJOCO_USE_FILAMENT_MJR_COMPAT=OFF
+
+
 cmake --build build-wheel -j4
 ```
 
@@ -707,7 +709,7 @@ bash tools/build_3dgs_wheel.sh
 如果使用已有的 `build/` 和 mjlab 环境，也可用一条完整命令指定所有参数：
 
 ```bash
-MJGS_PYTHON="$MJLAB_REPO/.venv/bin/python" \
+MJGS_PYTHON="$MJLAB_REPO/.env/bin/python" \
 MJGS_BUILD_DIR="$PWD/build" \
 CMAKE_BUILD_PARALLEL_LEVEL=4 \
 MUJOCO_CMAKE_ARGS='-DCMAKE_C_COMPILER=gcc-11 -DCMAKE_CXX_COMPILER=g++-11' \
@@ -784,11 +786,11 @@ ls -lh dist/*.whl python/dist/*.tar.gz
 安装到 mjlab 所使用的环境。`--no-deps` 保留已经准备好的训练依赖，仅替换 MuJoCo：
 
 ```bash
-uv pip install --python "$MJLAB_REPO/.venv/bin/python" \
+uv pip install --python "$MJLAB_REPO/.env/bin/python" \
   --reinstall --no-deps \
   ./dist/mujoco-3.16.0+3dgs-cp313-cp313-manylinux_2_35_x86_64.whl
 
-"$MJLAB_REPO/.venv/bin/python" -c \
+"$MJLAB_REPO/.env/bin/python" -c \
   'from importlib.metadata import version; import mujoco.gaussian; print(version("mujoco"))'
 ```
 
@@ -818,7 +820,7 @@ uv run --no-sync demo --use-3dgs True --viewer native --num-envs 1 \
 验证已安装 wheel（从其他工作目录运行也应成功）：
 
 ```bash
-"$MJLAB_REPO/.venv/bin/python" \
+"$MJLAB_REPO/.env/bin/python" \
   "$MUJOCO_REPO"/tools/test_python_3dgs.py --gpu
 ```
 
@@ -917,7 +919,7 @@ ONNX，并打包 MuJoCo 模型、参考动作和接口配置；`tools/play_mjlab
 ### 17.1 导出测试包
 
 先完成第 16 节自定义 wheel 的安装。导出环境还需要 `onnx`、`onnxruntime`；
-若缺少，可用 `uv pip install --python .venv/bin/python onnx onnxruntime` 安装。
+若缺少，可用 `uv pip install --python .env/bin/python onnx onnxruntime` 安装。
 在已准备好的 mjlab 环境执行：
 
 ```bash
