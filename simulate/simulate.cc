@@ -2864,11 +2864,12 @@ void Simulate::Render() {
     this->gaussian_ply_pending.reset();
   }
 #endif
-  mjr_render(rect, &this->scn, &this->platform_ui->mjr_context());
 #if defined(MJGS_ENABLE_3DGS)
-  mjgs::Render(this->scn, rect);
+  mjgs::RenderScene(this->scn, rect, &this->platform_ui->mjr_context());
   this->gaussian_status = mjgs::Status();
   if (mjgs::ExitRequested()) { this->exitrequest.store(1); }
+#else
+  mjr_render(rect, &this->scn, &this->platform_ui->mjr_context());
 #endif
 
   // show last loading error

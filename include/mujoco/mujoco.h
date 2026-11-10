@@ -953,6 +953,12 @@ MJAPI void mjr_figure(mjrRect viewport, mjvFigure* fig, const mjrContext* con);
 // Render 3D scene.
 MJAPI void mjr_render(mjrRect viewport, mjvScene* scn, const mjrContext* con);
 
+// Classic renderer extension: invoke callback after opaque/background passes and before
+// transparent geoms, once per eye. The callback must restore all modified GL state.
+// Not invoked for segmentation. NULL callback is equivalent to mjr_render.
+MJAPI void mjr_renderWithCallback(mjrRect viewport, mjvScene* scn, const mjrContext* con,
+                                 void (*callback)(mjrRect, const mjvScene*, void*), void* userdata);
+
 // Call glFinish.
 MJAPI void mjr_finish(void);
 

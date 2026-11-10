@@ -24,6 +24,34 @@ export CHECKPOINT_DIR=/path/to/g1_velocity/run_directory
 
 ## 1. Requirements
 
+### 半透明 mesh 与 3DGS 的绘制顺序（2026-11-10）
+
+经典 OpenGL native viewer 的顺序调整为：不透明几何、阴影和背景 → 3DGS →
+半透明 geom/mesh → 标签和 UI。半透明几何继续使用 MuJoCo 原有混合与排序，
+不写深度；不修改 alpha=0.995 的透明分类阈值。
+
+`mjr_renderWithCallback` 是经典渲染器的可选扩展，在透明阶段前调用外部绘制，
+原 `mjr_render` 使用空回调，保持原流程。回调必须恢复改动的 GL 状态。
+`mjgs::RenderScene` 集成该回调并在完整合成后截图。未加载 PLY 或隐藏 3DGS
+时应与原图一致；segmentation 不调用外部颜色绘制。
+
+显式运行需要桌面 OpenGL 4.6 compatibility context 的回归：
+
+```bash
+cmake -S . -B build -DMUJOCO_BUILD_3DGS_TESTS=ON
+cmake --build build --target simulate mjgs_render_test mjgs_transparency_test -j4
+./build/bin/mjgs_render_test
+./build/bin/mjgs_transparency_test
+```
+
+新增回归检查真实 mesh 的 alpha=0.1/0.5/1 像素混合、不透明遮挡、隐藏/无 PLY
+图像一致性、segmentation 隔离及截图包含透明阶段。它不证明 Gaussian 与
+透明 mesh 的逐片元联合排序：透明 mesh 作为调试覆盖层，位于 Gaussian 墙后
+仍可能显示。原有立体、正交和 scene transform 限制仍保留。
+
+修改本仓库源码后，上层 mjlab 使用的已安装 wheel 不会自动更新。需要重新构建
+并安装当前 Python 版本的自定义 wheel，或运行这里重新编译的 simulate。
+
 本项目需要满足以下功能需求：
 
 1. **`simulate` 支持 3DGS PLY 文件渲染**

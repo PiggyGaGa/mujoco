@@ -15,3 +15,8 @@ add_test(NAME mjgs_lifecycle_test COMMAND mjgs_lifecycle_test)
 add_executable(mjgs_render_test render_test.cc)
 target_link_libraries(mjgs_render_test PRIVATE
   mujoco_3dgs_renderer GLEW::GLEW glfw)
+
+# Like mjgs_render_test, this explicitly requires a desktop GL context.
+add_executable(mjgs_transparency_test transparency_test.cc)
+target_link_libraries(mjgs_transparency_test PRIVATE
+  mujoco_3dgs_renderer GLEW::GLEW glfw)

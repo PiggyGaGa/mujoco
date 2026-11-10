@@ -884,6 +884,13 @@ static void adjustLight(const mjvLight* thislight, int n) {
 
 // render
 void mjr_render(mjrRect viewport, mjvScene* scn, const mjrContext* con) {
+  mjr_renderWithCallback(viewport, scn, con, NULL, NULL);
+}
+
+
+// render with an optional external pass before transparent geometry
+void mjr_renderWithCallback(mjrRect viewport, mjvScene* scn, const mjrContext* con,
+                            void (*callback)(mjrRect, const mjvScene*, void*), void* userdata) {
   int stereo, nt, ngeom = scn->ngeom, nlight = mjMIN(mjMAXLIGHT, scn->nlight);
   unsigned int drawbuffer;
   mjvGLCamera cam;
@@ -1472,6 +1479,12 @@ void mjr_render(mjrRect viewport, mjvScene* scn, const mjrContext* con) {
 
       // wireframe or filled depending on flag
       glPolygonMode(GL_FRONT_AND_BACK, scn->flags[mjRND_WIREFRAME] ? GL_LINE : GL_FILL);
+    }
+
+    // External renderers share opaque depth, then transparent geoms overlay them.
+    // Segmentation exits this eye above without invoking the external pass.
+    if (callback) {
+      callback(viewport, scn, userdata);
     }
 
     //------------------------------------ transparent regular rendering

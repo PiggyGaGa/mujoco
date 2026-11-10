@@ -92,7 +92,7 @@ void Render(const mjvScene& scene, mjrRect rect) {
   // viewer by default. Its Gaussian appearance must still render in that case.
   if (rect.width<=0 || rect.height<=0) return;
   // No asset means exactly the upstream viewer rendering, apart from optional capture.
-  if (config.ply.empty()) { if (!config.screenshot.empty()) Capture(rect); return; }
+  if (config.ply.empty()) return;
   try {
     if (!attempted) {
       attempted = true;
@@ -113,7 +113,7 @@ void Render(const mjvScene& scene, mjrRect rect) {
       std::fprintf(stderr,"[3DGS] Loaded %zu Gaussians, GL %s\n",cloud->GetNumGaussians(),glGetString(GL_VERSION));
     }
     if (!renderer) return;
-    if (hidden) { if (!config.screenshot.empty()) Capture(rect); return; }
+    if (hidden) return;
     const auto camera=mjv_averageCamera(scene.camera,scene.camera+1);
     if (scene.stereo!=mjSTEREO_NONE || camera.orthographic || scene.enabletransform) {
       if (!warned) std::fprintf(stderr,"[3DGS] Stereo/orthographic/scene transforms not supported; splats hidden\n");
@@ -143,11 +143,17 @@ void Render(const mjvScene& scene, mjrRect rect) {
     renderer->Sort(local_camera,projection,viewport,nearfar);
     glMemoryBarrier(GL_ELEMENT_ARRAY_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
     renderer->Render(local_camera,projection,viewport,nearfar);
-    if (!config.screenshot.empty()) Capture(rect);
   } catch (const std::exception& e) {
     status = std::string("error: ") + e.what();
     std::fprintf(stderr,"[3DGS] Disabled: %s\n",e.what()); renderer.reset();
   }
+}
+void RenderScene(mjvScene& scene, mjrRect rect, const mjrContext* context) {
+  mjr_renderWithCallback(rect, &scene, context,
+    [](mjrRect viewport, const mjvScene* current, void*) {
+      Render(*current, viewport);
+    }, nullptr);
+  if (rect.width > 0 && rect.height > 0 && !config.screenshot.empty()) Capture(rect);
 }
 void Shutdown() {
   renderer.reset();
