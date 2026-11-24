@@ -26,6 +26,43 @@ thread_local int hidden = 0;
 thread_local bool exit_requested = false;
 thread_local int frames = 0;
 thread_local std::string status = "empty";
+// Gaussian positions are static.  Keeping the previous back-to-front order
+// avoids a full GPU radix sort (and SplatRenderer's GPU -> CPU visible-count
+// readback) on every frame.  Rotation/projection changes invalidate it at
+// once; tracking-camera translations refresh it periodically or after a jump.
+thread_local bool sort_valid = false;
+thread_local glm::mat4 sorted_world_camera;
+thread_local glm::mat4 sorted_projection;
+thread_local glm::vec4 sorted_viewport;
+thread_local glm::vec2 sorted_nearfar;
+thread_local int sort_reuse_frames = 0;
+constexpr float kSortTranslationMeters = 0.05f;
+constexpr int kMaxSortReuseFrames = 8;
+
+bool SameOrientation(const glm::mat4& a, const glm::mat4& b) {
+  // lookAt/inverse can introduce tiny roundoff as a tracking camera moves.
+  constexpr float kTolerance = 1e-5f;
+  for (int column = 0; column < 3; ++column) {
+    for (int row = 0; row < 3; ++row) {
+      if (std::abs(a[column][row] - b[column][row]) > kTolerance) return false;
+    }
+  }
+  return true;
+}
+
+float TranslationDistanceSquared(const glm::mat4& a, const glm::mat4& b) {
+  const glm::vec3 delta = glm::vec3(a[3]) - glm::vec3(b[3]);
+  return glm::dot(delta, delta);
+}
+
+bool SameVector(const glm::vec4& a, const glm::vec4& b) {
+  return a.x == b.x && a.y == b.y && a.z == b.z && a.w == b.w;
+}
+
+bool SameVector(const glm::vec2& a, const glm::vec2& b) {
+  return a.x == b.x && a.y == b.y;
+}
+
 float Number(const char* text) {
   size_t end = 0;
   float x = std::stof(text, &end);
@@ -103,12 +140,14 @@ void Render(const mjvScene& scene, mjrRect rect) {
       if (!GLEW_VERSION_4_6 || (profile & GL_CONTEXT_CORE_PROFILE_BIT))
         throw std::runtime_error("Need OpenGL 4.6 compatibility profile; normal viewer remains available");
       GlState state;
+      GlBufferState buffer_state;
       auto cloud=std::make_shared<GaussianCloud>(GaussianCloud::Options{config.full_sh,false});
       if (!cloud->ImportPly(config.ply) || !cloud->GetNumGaussians())
         throw std::runtime_error("Gaussian asset loading failed");
       auto candidate=std::make_unique<SplatRenderer>();
       if (!candidate->Init(cloud,false,false)) throw std::runtime_error("Splat renderer initialization failed");
       renderer=std::move(candidate);
+      sort_valid = false;
       status = "ready";
       std::fprintf(stderr,"[3DGS] Loaded %zu Gaussians, GL %s\n",cloud->GetNumGaussians(),glGetString(GL_VERSION));
     }
@@ -128,7 +167,8 @@ void Render(const mjvScene& scene, mjrRect rect) {
     glm::mat4 projection=glm::frustum(camera.frustum_center-halfwidth,
       camera.frustum_center+halfwidth,camera.frustum_bottom,camera.frustum_top,
       camera.frustum_near,camera.frustum_far);
-    glm::mat4 local_camera=glm::inverse(WorldFromGaussian(config))*glm::inverse(view);
+    const glm::mat4 world_camera=glm::inverse(view);
+    glm::mat4 local_camera=glm::inverse(WorldFromGaussian(config))*world_camera;
     GlState state;
     // Use conventional clip coordinates for Splatapult; fragment shader writes reversed depth.
     glClipControl(GL_LOWER_LEFT,GL_NEGATIVE_ONE_TO_ONE);
@@ -140,8 +180,29 @@ void Render(const mjvScene& scene, mjrRect rect) {
     glDisable(GL_LIGHTING); glPolygonMode(GL_FRONT_AND_BACK, GL_FILL); glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);
     const glm::vec4 viewport(rect.left,rect.bottom,rect.width,rect.height);
     const glm::vec2 nearfar(camera.frustum_near,camera.frustum_far);
-    renderer->Sort(local_camera,projection,viewport,nearfar);
-    glMemoryBarrier(GL_ELEMENT_ARRAY_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
+    const bool camera_translated = sort_valid &&
+        TranslationDistanceSquared(world_camera, sorted_world_camera) > 0.0f;
+    if (camera_translated) ++sort_reuse_frames;
+    const bool sort_needed = !sort_valid ||
+        !SameOrientation(world_camera, sorted_world_camera) ||
+        !SameOrientation(projection, sorted_projection) ||
+        !SameVector(viewport, sorted_viewport) ||
+        !SameVector(nearfar, sorted_nearfar) ||
+        TranslationDistanceSquared(world_camera, sorted_world_camera) >=
+            kSortTranslationMeters * kSortTranslationMeters ||
+        sort_reuse_frames >= kMaxSortReuseFrames;
+    if (sort_needed) {
+      GlBufferState buffer_state;
+      renderer->Sort(local_camera,projection,viewport,nearfar);
+      glMemoryBarrier(GL_ELEMENT_ARRAY_BARRIER_BIT | GL_COMMAND_BARRIER_BIT |
+                      GL_BUFFER_UPDATE_BARRIER_BIT);
+      sorted_world_camera = world_camera;
+      sorted_projection = projection;
+      sorted_viewport = viewport;
+      sorted_nearfar = nearfar;
+      sort_reuse_frames = 0;
+      sort_valid = true;
+    }
     renderer->Render(local_camera,projection,viewport,nearfar);
   } catch (const std::exception& e) {
     status = std::string("error: ") + e.what();
@@ -159,6 +220,8 @@ void Shutdown() {
   renderer.reset();
   config = SceneConfig{};
   attempted = warned = exit_requested = false;
+  sort_valid = false;
+  sort_reuse_frames = 0;
   hidden = frames = 0;
   status = "empty";
 }
