@@ -57,22 +57,29 @@ mjgs_replace_once(vertex "}\n\n#ifdef FRAMEBUFFER_SRGB"
 mjgs_replace_once(vertex
   "    vec3 v = normalize(position.xyz - eye);\n    geom_color = vec4(ComputeRadianceFromSH(v), alpha);"
   "#ifdef DC_ONLY\n    geom_color = vec4(ComputeRadianceFromSH(vec3(0.0f)), alpha);\n#else\n    vec3 v = normalize(position.xyz - eye);\n    geom_color = vec4(ComputeRadianceFromSH(v), alpha);\n#endif")
+# Reverse clip Z before rasterization instead of writing gl_FragDepth in every
+# fragment. With the conventional [-1, 1] clip range this is algebraically the
+# same window depth, and lets the driver reject occluded splats before shading.
+mjgs_replace_once(vertex "    gl_Position = p4;"
+  "    gl_Position = vec4(p4.xy, -p4.z, p4.w);")
 file(WRITE "${MJGS_GENERATED_DIR}/shader/splat_vert.glsl" "${vertex}")
 
 file(READ "${MJGS_GENERATED_DIR}/shader/splat_frag.glsl" fragment)
-mjgs_replace_once(fragment "    vec2 d ="
-  "    gl_FragDepth = 1.0 - gl_FragCoord.z;\n    vec2 d =")
+# These values are constant across a splat's quad; avoid interpolation work.
+foreach(declaration IN ITEMS "vec4 frag_color" "vec4 frag_cov2inv" "vec2 frag_p")
+  mjgs_replace_once(fragment "in ${declaration};" "flat in ${declaration};")
+endforeach()
 file(WRITE "${MJGS_GENERATED_DIR}/shader/splat_frag.glsl" "${fragment}")
 
 file(READ "${MJGS_GENERATED_DIR}/shader/splat_geom.glsl" geometry)
 mjgs_replace_once(geometry "ndcP.z < 0.25f ||"
   "ndcP.z < -1.0f || ndcP.z > 1.0f ||")
+foreach(declaration IN ITEMS "vec4 frag_color" "vec4 frag_cov2inv" "vec2 frag_p")
+  mjgs_replace_once(geometry "out ${declaration};" "flat out ${declaration};")
+endforeach()
 file(WRITE "${MJGS_GENERATED_DIR}/shader/splat_geom.glsl" "${geometry}")
 
-file(READ "${MJGS_GENERATED_DIR}/shader/presort_compute.glsl" presort)
-mjgs_replace_once(presort "depth > 0.0f &&"
-  "depth >= nearFar.x && depth <= nearFar.y &&")
-file(WRITE "${MJGS_GENERATED_DIR}/shader/presort_compute.glsl" "${presort}")
+configure_file(presort_compute.glsl "${MJGS_GENERATED_DIR}/shader/presort_compute.glsl" COPYONLY)
 
 # Keep the compacted visible count on the GPU.  The multi-radix shaders read
 # the atomic counter directly, so sorting never has to wait for a CPU readback.
@@ -83,6 +90,12 @@ foreach(name IN ITEMS multi_radixsort.glsl multi_radixsort_histograms.glsl)
   string(REPLACE "g_num_elements" "num_elements" radix "${radix}")
   mjgs_replace_once(radix "void main() {"
     "void main() {\n    const uint num_elements = atomicCounter(element_count);")
+  # The GPU count can be much smaller than buffer capacity. All lanes in a
+  # workgroup use the same loop bound, preserving barrier participation while
+  # avoiding 32 rounds of barriers in groups beyond the compacted visible set.
+  mjgs_replace_once(radix
+    "for (uint index = 0; index < g_num_blocks_per_workgroup; index++) {"
+    "const uint group_begin = gl_WorkGroupID.x * g_num_blocks_per_workgroup * WORKGROUP_SIZE;\n    const uint remaining = num_elements > group_begin ? num_elements - group_begin : 0u;\n    const uint blocks = min(g_num_blocks_per_workgroup, (remaining + WORKGROUP_SIZE - 1u) / WORKGROUP_SIZE);\n    for (uint index = 0; index < blocks; index++) {")
   file(WRITE "${MJGS_GENERATED_DIR}/shader/${name}" "${radix}")
 endforeach()
 
